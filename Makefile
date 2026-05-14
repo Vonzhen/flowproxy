@@ -1,4 +1,4 @@
-# --- [ FlowProxy | OpenWrt Native Makefile | v1.0 ] ---
+# --- [ FlowProxy | OpenWrt Native Makefile | v1.2 ] ---
 # [Category B] 职能：定义 OpenWrt 软件包元数据、依赖树与标准安装钩子
 
 include $(TOPDIR)/rules.mk
@@ -19,7 +19,7 @@ define Package/luci-app-flowproxy
   CATEGORY:=LuCI
   SUBMENU:=3. Applications
   TITLE:=FlowProxy - Modern sing-box Control Plane
-  DEPENDS:=+ucode +ucode-mod-uci +ucode-mod-fs +ucode-mod-math +ucode-mod-rt +ucode-mod-util +sing-box +curl +ca-bundle +kmod-tun
+  DEPENDS:=+ucode +ucode-mod-uci +ucode-mod-fs +ucode-mod-math +curl +ca-bundle +kmod-tun
 endef
 
 define Package/luci-app-flowproxy/conffiles
@@ -27,6 +27,7 @@ define Package/luci-app-flowproxy/conffiles
 endef
 
 # [Category B] 在编译期调用宿主工具链转换 I18N 源文件
+# [Category C] Note: 修复点 C - 强制输出目标后缀为 zh-cn 适配 LuCI i18n
 define Build/Compile
 	po2lmo ./po/zh_Hans/flowproxy.po $(PKG_BUILD_DIR)/flowproxy.zh-cn.lmo
 endef
@@ -38,9 +39,18 @@ define Package/luci-app-flowproxy/install
 	$(INSTALL_DIR) $(1)/usr/share/flowproxy
 	$(CP) ./usr/share/flowproxy/* $(1)/usr/share/flowproxy/
 	
+	# [Category B] 修复点 A & B - 映射 Ubus 守护进程依赖的原生 Ucode 插件目录与 ACL 规则
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode
+	$(CP) ./usr/share/rpcd/ucode/* $(1)/usr/share/rpcd/ucode/
+	
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(CP) ./usr/share/rpcd/acl.d/* $(1)/usr/share/rpcd/acl.d/
+	
+	# LuCI 前端资源映射
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/flowproxy
 	$(CP) ./htdocs/luci-static/resources/flowproxy/* $(1)/www/luci-static/resources/flowproxy/
 	
+	# 独立面板 (Zashboard) 映射
 	$(INSTALL_DIR) $(1)/www/zashboard
 	$(CP) ./www/zashboard/* $(1)/www/zashboard/
 	
@@ -49,19 +59,20 @@ define Package/luci-app-flowproxy/install
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/flowproxy.zh-cn.lmo $(1)/usr/lib/lua/luci/i18n/
 endef
 
-# [Category B] 后置生命周期干预：处理权限提权、网关链接与异步环境就绪
+# [Category B] 后置生命周期干预：处理权限提权与异步环境就绪
 define Package/luci-app-flowproxy/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
-    chmod 0755 /etc/init.d/flowproxy
-    chmod 0755 /usr/share/flowproxy/runtime/worker.uc
-    
-    mkdir -p /usr/libexec/rpcd
-    ln -sf /usr/share/flowproxy/rpcd/ucode/flowproxy.uc /usr/libexec/rpcd/flowproxy
-    
-    /etc/init.d/flowproxy enable
-    # [Category C] Note: 解决生命周期延迟，确保环境即刻可用
-    [ -f "/etc/uci-defaults/99_flowproxy" ] && sh "/etc/uci-defaults/99_flowproxy"
+	chmod 0755 /etc/init.d/flowproxy
+	chmod 0755 /usr/share/flowproxy/runtime/worker.uc
+	
+	/etc/init.d/flowproxy enable
+	# [Category C] Note: 解决生命周期延迟，确保环境即刻可用
+	[ -f "/etc/uci-defaults/99_flowproxy" ] && sh "/etc/uci-defaults/99_flowproxy"
+	
+	# 历史软链清理与热重载通知
+	rm -f /usr/libexec/rpcd/flowproxy
+	killall -HUP rpcd 2>/dev/null
 fi
 exit 0
 endef
