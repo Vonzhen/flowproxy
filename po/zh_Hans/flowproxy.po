@@ -1,0 +1,2144 @@
+# --- [ FlowProxy | 国际化字典模块 | v1.1 ] ---
+# 功能：提供前端界面的多语言（简体中文）映射
+# 职责：隔离硬编码文本，提供准确的系统工程隐喻与增量翻译
+
+# --- [ 变更记录 ] ---
+# v1.1 (2026-04-27)
+# - 修复：剥离 L1 视图层硬编码中文，新增 Zashboard 面板国际化词条映射，消除可维护性技术债
+# v1.0 (2026-04-24)
+# - 新增：初始化实现，清洗历史废弃词条，注入异步任务系统新词库
+
+# --- [ 初始化 ] ---
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Project-Id-Version: FlowProxy\n"
+"Language-Team: none\n"
+"Language: zh_Hans\n"
+"MIME-Version: 1.0\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+# --- [ 子模块1：增量异步系统与业务架构词条 ] ---
+
+# Note: 剥离自 L1 视图层 UI 配置，解决 "title" 字段硬编码污染问题
+msgid "Zashboard Panels"
+msgstr "Zashboard 面板"
+
+msgid "Panels"
+msgstr "面板中心"
+
+msgid "Job queued, waiting for scheduler"
+msgstr "任务已入队，等待引擎调度"
+
+msgid "Global Async Update"
+msgstr "全局异步更新"
+
+msgid "Rebuild Node Groups"
+msgstr "极速重组本地节点组"
+
+msgid "Transaction Committed"
+msgstr "事务安全提交"
+
+msgid "Transaction Aborted"
+msgstr "事务回滚或失败"
+
+msgid "FlowProxy Engine"
+msgstr "FlowProxy 运行引擎"
+
+msgid "FlowProxy Control Plane"
+msgstr "FlowProxy 控制面"
+
+# --- [ 子模块2：核心系统与配置词条映射 ] ---
+
+msgid "%s log"
+msgstr "%s 日志"
+
+msgid "%s nodes removed"
+msgstr "移除了 %s 个节点"
+
+msgid "/etc/flowproxy/certs/..., /etc/acme/..., /etc/ssl/..."
+msgstr "/etc/flowproxy/certs/...，/etc/acme/...，/etc/ssl/..."
+
+msgid "4 or 6. Not limited if empty."
+msgstr "4 或 6。留空不限制。"
+
+msgid ""
+"<code>%s</code> will be temporarily overwritten to <code>%s</code> after 50 "
+"triggers in 30s if not enabled."
+msgstr ""
+"<code>%s</code> 在未启用的情况下，50 次触发后会在 30 秒内临时覆盖为 "
+"<code>%s</code>。"
+
+msgid "<strong>Save your configuration before uploading files!</strong>"
+msgstr "<strong>上传文件前请先保存配置！</strong>"
+
+msgid "API token"
+msgstr "API 令牌"
+
+msgid "Accept any if empty."
+msgstr "留空则不校验。"
+
+msgid "Accept empty query response"
+msgstr "接受空查询响应"
+
+msgid "Access Control"
+msgstr "访问控制"
+
+msgid "Access key ID"
+msgstr "访问密钥 ID"
+
+msgid "Access key secret"
+msgstr "访问密钥"
+
+msgid "Action"
+msgstr "操作"
+
+msgid "Add a DNS rule"
+msgstr "新增 DNS 规则"
+
+msgid "Add a DNS server"
+msgstr "新增 DNS 服务器"
+
+msgid "Add a node"
+msgstr "新增节点"
+
+msgid "Add a routing node"
+msgstr "新增路由节点"
+
+msgid "Add a routing rule"
+msgstr "新增路由规则"
+
+msgid "Add a rule set"
+msgstr "新增规则集"
+
+msgid "Add a server"
+msgstr "新增服务器"
+
+msgid "Additional headers to be sent to the DNS server."
+msgstr "发送到 DNS 服务器的附加标头。"
+
+msgid "Address"
+msgstr "地址"
+
+msgid "Address resolver"
+msgstr "地址解析器"
+
+msgid "Address strategy"
+msgstr "地址解析策略"
+
+msgid "Alibaba Cloud DNS"
+msgstr "阿里云 DNS"
+
+msgid "Aliyun Public DNS (223.5.5.5)"
+msgstr "阿里云公共 DNS（223.5.5.5）"
+
+msgid "All ports"
+msgstr "所有端口"
+
+msgid "Allow access from the Internet."
+msgstr "允许来自互联网的访问。"
+
+msgid "Allow insecure"
+msgstr "允许不安全连接"
+
+msgid "Allow insecure connection at TLS client."
+msgstr "允许 TLS 客户端侧的不安全连接。"
+
+msgid "Allow insecure connection by default when add nodes from subscriptions."
+msgstr "从订阅获取节点时，默认允许不安全连接。"
+
+msgid "Allowed payload size is in the request."
+msgstr "请求中允许的载荷大小。"
+
+msgid "Already at the latest version."
+msgstr "已是最新版本。"
+
+msgid "Already in updating."
+msgstr "已在更新中。"
+
+msgid "Alter ID"
+msgstr "额外 ID"
+
+msgid "Alternative HTTP port"
+msgstr "替代 HTTP 端口"
+
+msgid "Alternative TLS port"
+msgstr "替代 HTTPS 端口"
+
+msgid "An error occurred during updating subscriptions: %s"
+msgstr "更新订阅时发生错误：%s"
+
+msgid "Answer"
+msgstr "回答"
+
+msgid "AnyTLS"
+msgstr "AnyTLS"
+
+msgid "AnyTLS padding scheme in array."
+msgstr "AnyTLS 填充方案。"
+
+msgid ""
+"Append a <code>edns0-subnet</code> OPT extra record with the specified IP "
+"prefix to every query by default.<br/>If value is an IP address instead of "
+"prefix, <code>/32</code> or <code>/128</code> will be appended automatically."
+msgstr ""
+"将带有指定 IP 前缀的 <code>edns0-subnet</code> OPT 记录附加到每个查询。如果值"
+"是 IP 地址而不是前缀，则会自动添加 <code>/32</code> 或 <code>/128</code>。"
+
+msgid "Append self-signed certificate"
+msgstr "追加自签名证书"
+
+msgid "Applied"
+msgstr "已应用"
+
+msgid "Apply"
+msgstr "应用"
+
+msgid "Are you sure to allow insecure?"
+msgstr "确定要允许不安全连接吗？"
+
+msgid "Auth timeout"
+msgstr "认证超时"
+
+msgid "Authenticated length"
+msgstr "认证长度"
+
+msgid "Authentication payload"
+msgstr "认证载荷"
+
+msgid "Authentication type"
+msgstr "认证类型"
+
+msgid "Auto update"
+msgstr "自动更新"
+
+msgid "Auto update subscriptions and geodata."
+msgstr "自动更新订阅和地理数据。"
+
+msgid "BBR"
+msgstr "BBR"
+
+msgid "BaiDu"
+msgstr "百度"
+
+msgid "Base64"
+msgstr "Base64"
+
+msgid "Based on google/gvisor."
+msgstr "基于 google/gvisor。"
+
+msgid "Binary file"
+msgstr "二进制文件"
+
+msgid "Bind interface"
+msgstr "绑定接口"
+
+msgid ""
+"Bind outbound traffic to specific interface. Leave empty to auto detect."
+msgstr "绑定出站流量至指定端口。留空自动检测。"
+
+msgid "BitTorrent"
+msgstr "BitTorrent"
+
+msgid "Blacklist mode"
+msgstr "黑名单模式"
+
+msgid "Block"
+msgstr "封锁"
+
+msgid "Both"
+msgstr "全部"
+
+msgid "Bypass CN traffic"
+msgstr "绕过中国流量"
+
+msgid "Bypass mainland China"
+msgstr "大陆白名单"
+
+msgid "Bypass mainland China traffic via firewall rules by default."
+msgstr "默认使用防火墙规则绕过中国大陆流量。"
+
+msgid "CA provider"
+msgstr "CA 颁发机构"
+
+msgid "CNNIC Public DNS (210.2.4.8)"
+msgstr "CNNIC 公共 DNS（210.2.4.8）"
+
+msgid "CUBIC"
+msgstr "CUBIC"
+
+msgid "Cancel"
+msgstr "取消"
+
+msgid "Certificate path"
+msgstr "证书路径"
+
+msgid "Check"
+msgstr "检查"
+
+msgid "Check update"
+msgstr "检查更新"
+
+msgid "China DNS server"
+msgstr "国内 DNS 服务器"
+
+msgid "China IPv4 list version"
+msgstr "国内 IPv4 库版本"
+
+msgid "China IPv6 list version"
+msgstr "国内 IPv6 库版本"
+
+msgid "China list version"
+msgstr "国内域名列表版本"
+
+msgid "Chromium / Cronet"
+msgstr "Chromium / Cronet"
+
+msgid "Cipher suites"
+msgstr "密码套件"
+
+msgid "Cisco Public DNS (208.67.222.222)"
+msgstr "思科公共 DNS（208.67.222.222）"
+
+msgid "Clean log"
+msgstr "清空日志"
+
+msgid "Client"
+msgstr "客户端"
+
+msgid "Client Settings"
+msgstr "客户端设置"
+
+msgid "Client version"
+msgstr "客户端版本"
+
+msgid "CloudFlare Public DNS (1.1.1.1)"
+msgstr "CloudFlare 公共 DNS（1.1.1.1）"
+
+msgid "Cloudflare"
+msgstr "Cloudflare"
+
+msgid "Collecting data..."
+msgstr "正在收集数据中..."
+
+msgid "Common ports only (bypass P2P traffic)"
+msgstr "仅常用端口（绕过 P2P 流量）"
+
+msgid "Congestion control algorithm"
+msgstr "拥塞控制算法"
+
+msgid "Connection check"
+msgstr "连接检查"
+
+msgid "Custom routing"
+msgstr "自定义路由"
+
+msgid "DNS"
+msgstr "DNS"
+
+msgid "DNS Rules"
+msgstr "DNS 规则"
+
+msgid "DNS Servers"
+msgstr "DNS 服务器"
+
+msgid "DNS Settings"
+msgstr "DNS 设置"
+
+msgid "DNS provider"
+msgstr "DNS 提供商"
+
+msgid "DNS rule"
+msgstr "DNS 规则"
+
+msgid "DNS server"
+msgstr "DNS 服务器"
+
+msgid "DNS01 challenge"
+msgstr "DNS01 验证"
+
+msgid "DTLS"
+msgstr "DTLS"
+
+msgid "Debug"
+msgstr "调试"
+
+msgid "Default"
+msgstr "默认"
+
+msgid "Default DNS (issued by WAN)"
+msgstr "默认 DNS（由 WAN 下发）"
+
+msgid "Default DNS server"
+msgstr "默认 DNS 服务器"
+
+msgid "Default DNS server for resolving domain name in the server address."
+msgstr "用于解析服务器地址中的域名的默认 DNS 服务器。"
+
+msgid "Default DNS strategy"
+msgstr "默认 DNS 解析策略"
+
+msgid "Default outbound"
+msgstr "默认出站"
+
+msgid "Default outbound DNS"
+msgstr "默认出站 DNS"
+
+msgid "Default outbound for connections not matched by any routing rules."
+msgstr "用于未被任何路由规则匹配的连接的默认出站。"
+
+msgid "Default packet encoding"
+msgstr "默认包封装格式"
+
+msgid "Default server name"
+msgstr "默认服务器名称"
+
+msgid "Direct"
+msgstr "直连"
+
+msgid "Direct Domain List"
+msgstr "直连域名列表"
+
+msgid "Direct IPv4 IP-s"
+msgstr "直连 IPv4 地址"
+
+msgid "Direct IPv6 IP-s"
+msgstr "直连 IPv6 地址"
+
+msgid "Direct MAC-s"
+msgstr "直连 MAC 地址"
+
+msgid "Disable"
+msgstr "禁用"
+
+msgid "Disable (the service)"
+msgstr "禁用（服务）"
+
+msgid "Disable DNS cache"
+msgstr "禁用 DNS 缓存"
+
+msgid "Disable DNS cache in this query."
+msgstr "在本次查询中禁用 DNS 缓存。"
+
+msgid "Disable HTTP challenge"
+msgstr "禁用 HTTP 验证"
+
+msgid "Disable Path MTU discovery"
+msgstr "禁用路径 MTU 探测"
+
+msgid "Disable TLS ALPN challenge"
+msgstr "禁用 TLS ALPN 认证"
+
+msgid "Disable UDP domain unmapping"
+msgstr "禁用 UDP 域名映射"
+
+msgid "Disable cache and save cache in this query."
+msgstr "在本次查询中禁用缓存。"
+
+msgid "Disable cache expire"
+msgstr "缓存永不过期"
+
+msgid "Disable dns cache"
+msgstr "禁用 DNS 缓存"
+
+msgid ""
+"Disables Path MTU Discovery (RFC 8899). Packets will then be at most 1252 "
+"(IPv4) / 1232 (IPv6) bytes in size."
+msgstr ""
+"禁用路径 MTU 发现 (RFC 8899)。 数据包的大小最多为 1252 (IPv4) / 1232 (IPv6) "
+"字节。"
+
+msgid "Domain keyword"
+msgstr "域名关键词"
+
+msgid "Domain name"
+msgstr "域名"
+
+msgid "Domain regex"
+msgstr "域名正则表达式"
+
+msgid "Domain resolver"
+msgstr "域名解析器"
+
+msgid "Domain strategy"
+msgstr "域名解析策略"
+
+msgid "Domain strategy for resolving the domain names."
+msgstr "目标域名的解析策略。"
+
+msgid "Domain suffix"
+msgstr "域名后缀"
+
+msgid "Domains"
+msgstr "域名"
+
+msgid "Don't drop packets"
+msgstr "不丢弃数据包"
+
+msgid "Don't drop requests"
+msgstr "不丢弃请求"
+
+msgid "Download bandwidth"
+msgstr "下载带宽"
+
+msgid "Download bandwidth in Mbps."
+msgstr "下载带宽（单位：Mbps）。"
+
+msgid "Drop packets"
+msgstr "丢弃数据包"
+
+msgid "Drop requests"
+msgstr "丢弃请求"
+
+msgid ""
+"Drop/keep nodes that contain the specific keywords. <a target=\"_blank\" "
+"href=\"https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/"
+"Regular_Expressions\">Regex</a> is supported."
+msgstr ""
+"丢弃/保留 包含指定关键词的节点。支持<a target=\"_blank\" href=\"https://"
+"developer.mozilla.org/zh-CN/docs/Web/JavaScript/Guide/Regular_Expressions\">"
+"正则表达式</a>。"
+
+msgid "Drop/keep specific nodes from subscriptions."
+msgstr "从订阅中 丢弃/保留 指定节点"
+
+msgid ""
+"EAB (External Account Binding) contains information necessary to bind or map "
+"an ACME account to some other account known by the CA.<br/>External account "
+"bindings are \"used to associate an ACME account with an existing account in "
+"a non-ACME system, such as a CA customer database."
+msgstr ""
+"EAB（外部帐户绑定）包含将 ACME 帐户绑定或映射到 CA 已知的其他帐户所需的信息。"
+"<br/>外部帐户绑定“用于将 ACME 帐户与非 ACME 系统中的现有帐户相关联，例如 CA "
+"客户数据库。"
+
+msgid ""
+"ECH (Encrypted Client Hello) is a TLS extension that allows a client to "
+"encrypt the first part of its ClientHello message."
+msgstr ""
+"ECH（Encrypted Client Hello）是一个 TLS 扩展，它允许客户端加密其 ClientHello "
+"信息的第一部分。"
+
+msgid "ECH config"
+msgstr "ECH 配置"
+
+msgid "ECH config path"
+msgstr "ECH 配置路径"
+
+msgid "ECH key"
+msgstr "ECH 密钥"
+
+msgid "EDNS Client subnet"
+msgstr "ENDS 客户端子网"
+
+msgid "Early data"
+msgstr "前置数据"
+
+msgid "Early data header name"
+msgstr "前置数据标头"
+
+msgid "Early data is sent in path instead of header by default."
+msgstr "前置数据默认发送在路径而不是标头中。"
+
+msgid "Edit nodes"
+msgstr "修改节点"
+
+msgid "Email"
+msgstr "Email"
+
+msgid "Enable"
+msgstr "启用"
+
+msgid ""
+"Enable 0-RTT QUIC connection handshake on the client side. This is not "
+"impacting much on the performance, as the protocol is fully multiplexed.<br/"
+">Disabling this is highly recommended, as it is vulnerable to replay attacks."
+msgstr ""
+"在客户端启用 0-RTT QUIC 连接握手。由于协议是完全复用的，这对性能影响不大。"
+"<br/>强烈建议禁用此功能，因为它容易受到重放攻击。"
+
+msgid "Enable 0-RTT handshake"
+msgstr "启用 0-RTT 握手"
+
+msgid "Enable ACME"
+msgstr "启用 ACME"
+
+msgid "Enable ECH"
+msgstr "启用 ECH"
+
+msgid "Enable TCP Brutal"
+msgstr "启用 TCP Brutal"
+
+msgid "Enable TCP Brutal congestion control algorithm"
+msgstr "启用 TCP Brutal 拥塞控制算法。"
+
+msgid "Enable UDP fragmentation."
+msgstr "启用 UDP 分片。"
+
+msgid "Enable endpoint-independent NAT"
+msgstr "启用端点独立 NAT"
+
+msgid "Enable padding"
+msgstr "启用填充"
+
+msgid "Enable tcp fast open for listener."
+msgstr "为监听器启用 TCP 快速打开。"
+
+msgid ""
+"Enable the SUoT protocol, requires server support. Conflict with multiplex."
+msgstr "启用 SUoT 协议，需要服务端支持。与多路复用冲突。"
+
+msgid "Encrypt method"
+msgstr "加密方式"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "Expecting: %s"
+msgstr "请输入：%s"
+
+msgid "External Account Binding"
+msgstr "外部账户绑定"
+
+msgid "External account MAC key"
+msgstr "外部账户 MAC 密钥"
+
+msgid "External account key ID"
+msgstr "外部账户密钥标识符"
+
+msgid "Extra records"
+msgstr "附加记录"
+
+msgid "Failed to generate %s, error: %s."
+msgstr "生成 %s 失败，错误：%s。"
+
+msgid "Failed to upload %s, error: %s."
+msgstr "上传 %s 失败，错误：%s。"
+
+msgid "Fatal"
+msgstr "致命"
+
+msgid "Filter keywords"
+msgstr "过滤关键词"
+
+msgid "Filter nodes"
+msgstr "过滤节点"
+
+msgid "Firefox / uquic firefox"
+msgstr "Firefox / uquic firefox"
+
+msgid "Firewall"
+msgstr "防火墙"
+
+msgid "Flow"
+msgstr "流控"
+
+msgid "FlowProxy"
+msgstr "FlowProxy"
+
+msgid "FlowProxy Server"
+msgstr "FlowProxy 服务端"
+
+msgid "For resolving domain name in the server address."
+msgstr "用于解析服务器地址中的域名。"
+
+msgid "Format"
+msgstr "格式"
+
+msgid "Fragment TLS handshake into multiple TLS records."
+msgstr "将 TLS 握手分片为多个 TLS 记录"
+
+msgid ""
+"Fragment TLS handshakes. Due to poor performance, try <code>%s</code> first."
+msgstr "分片 TLS 握手。由于性能较差，请先尝试 <code>%s</code>。"
+
+msgid "Fragment fallback delay"
+msgstr "分片回退延迟"
+
+msgid "GET"
+msgstr "GET"
+
+msgid "GFW list version"
+msgstr "GFW 域名列表版本"
+
+msgid "GFWList"
+msgstr "GFWList"
+
+msgid "Gaming mode IPv4 IP-s"
+msgstr "游戏模式 IPv4 地址"
+
+msgid "Gaming mode IPv6 IP-s"
+msgstr "游戏模式 IPv6 地址"
+
+msgid "Gaming mode MAC-s"
+msgstr "游戏模式 MAC 地址"
+
+msgid "Generate"
+msgstr "生成"
+
+msgid "GitHub token"
+msgstr "GitHub 令牌"
+
+msgid "Global"
+msgstr "全局"
+
+msgid "Global padding"
+msgstr "全局填充"
+
+msgid "Global proxy IPv4 IP-s"
+msgstr "全局代理 IPv4 地址"
+
+msgid "Global proxy IPv6 IP-s"
+msgstr "全局代理 IPv6 IP-s"
+
+msgid "Global proxy MAC-s"
+msgstr "全局代理 MAC 地址"
+
+msgid "Global settings"
+msgstr "全局设置"
+
+msgid "Google"
+msgstr "谷歌"
+
+msgid "Google Public DNS (8.8.8.8)"
+msgstr "谷歌公共 DNS（8.8.8.8）"
+
+msgid "Grant access to flowproxy configuration"
+msgstr "授予 flowproxy 访问 UCI 配置的权限"
+
+msgid "HTTP"
+msgstr "HTTP"
+
+msgid "HTTP/3"
+msgstr "HTTP/3"
+
+msgid ""
+"HTTP3 server behavior when authentication fails.<br/>A 404 page will be "
+"returned if empty."
+msgstr "身份验证失败时的 HTTP3 服务器响应。默认返回 404 页面。"
+
+msgid "HTTPS"
+msgstr "HTTPS"
+
+msgid "HTTPUpgrade"
+msgstr "HTTPUpgrade"
+
+msgid "Handshake server address"
+msgstr "握手服务器地址"
+
+msgid "Handshake server port"
+msgstr "握手服务器端口"
+
+msgid "Headers"
+msgstr "标头"
+
+msgid "Heartbeat interval"
+msgstr "心跳间隔"
+
+msgid "Hop interval"
+msgstr "跳跃间隔"
+
+msgid "Hopping port"
+msgstr "跳跃端口"
+
+msgid "Host"
+msgstr "主机名"
+
+msgid "Host key"
+msgstr "主机密钥"
+
+msgid "Host key algorithms"
+msgstr "主机密钥算法"
+
+msgid "Host/IP fields"
+msgstr "主机/IP 字段"
+
+msgid ""
+"How long the server should wait for the client to send the authentication "
+"command (in seconds)."
+msgstr "服务器等待客户端发送认证命令的时间（单位：秒）。"
+
+msgid "Hysteria"
+msgstr "Hysteria"
+
+msgid "Hysteria2"
+msgstr "Hysteria2"
+
+msgid "IP CIDR"
+msgstr "IP CIDR"
+
+msgid "IP version"
+msgstr "IP 版本"
+
+msgid "IPv4"
+msgstr "IPv4"
+
+msgid "IPv4 only"
+msgstr "仅 IPv4"
+
+msgid "IPv6"
+msgstr "IPv6"
+
+msgid "IPv6 only"
+msgstr "仅 IPv6"
+
+msgid "IPv6 support"
+msgstr "IPv6 支持"
+
+msgid "Idle session check interval"
+msgstr "空闲会话检查间隔"
+
+msgid "Idle session check timeout"
+msgstr "空闲会话检查超时"
+
+msgid "Idle timeout"
+msgstr "空闲超时"
+
+msgid ""
+"If enabled, attempts to connect UDP connection to the destination instead of "
+"listen."
+msgstr "如果启用，尝试主动连接到目标的 UDP 而不是监听。"
+
+msgid ""
+"If enabled, for UDP proxy requests addressed to a domain, the original "
+"packet address will be sent in the response instead of the mapped domain."
+msgstr ""
+"如果启用，对于发送到域名的 UDP 代理请求，响应中将发送原始数据包地址而不是映射"
+"的域名。"
+
+msgid ""
+"If enabled, the client transport sends keepalive pings even with no active "
+"connections."
+msgstr "如果启用，客户端传输即使没有活动连接也会发送 keepalive ping。"
+
+msgid ""
+"If set, the requested domain name will be resolved to IP before routing."
+msgstr "如果设置，请求的域名将在路由前被解析为 IP 地址。"
+
+msgid ""
+"If the transport doesn't see any activity after a duration of this time (in "
+"seconds), it pings the client to check if the connection is still active."
+msgstr ""
+"如果传输在此时间段（单位：秒）后没有看到任何活动，它会向客户端发送 ping 请求"
+"以检查连接是否仍然活动。"
+
+msgid ""
+"If you have the root certificate, use this option instead of allowing "
+"insecure."
+msgstr "如果你拥有根证书，使用此选项而不是允许不安全连接。"
+
+msgid "Ignore client bandwidth"
+msgstr "忽略客户端带宽"
+
+msgid "Import"
+msgstr "导入"
+
+msgid "Import share links"
+msgstr "导入分享链接"
+
+msgid "In seconds."
+msgstr "单位：秒。"
+
+msgid "In seconds. Disabled by default."
+msgstr "单位：秒。默认禁用。"
+
+msgid ""
+"In the check, at least the first <code>n</code> idle sessions are kept open."
+msgstr "在检查中，至少保持前 <code>n</code> 个空闲会话处于打开状态。"
+
+msgid ""
+"In the check, close sessions that have been idle for longer than this, in "
+"seconds."
+msgstr "在检查中，关闭空闲时间超过此值的会话（单位：秒）。"
+
+msgid "Independent cache per server"
+msgstr "独立缓存"
+
+msgid "Info"
+msgstr "信息"
+
+msgid "Interface Control"
+msgstr "接口控制"
+
+msgid "Interrupt existing connections"
+msgstr "中断现有连接"
+
+msgid "Interrupt existing connections when the selected outbound has changed."
+msgstr "当选择的出站发生变化时中断现有连接。"
+
+msgid "Interval checking for idle sessions, in seconds."
+msgstr "空闲会话检查间隔（单位：秒）。"
+
+msgid ""
+"Interval for sending heartbeat packets for keeping the connection alive (in "
+"seconds)."
+msgstr "发送心跳包以保持连接存活的时间间隔（单位：秒）。"
+
+msgid "Invert"
+msgstr "反转"
+
+msgid "Invert match result."
+msgstr "反转匹配结果"
+
+msgid "Key path"
+msgstr "证书路径"
+
+msgid "LAN IP Policy"
+msgstr "LAN IP 策略"
+
+msgid "Label"
+msgstr "标签"
+
+msgid ""
+"Legacy protocol support (VMess MD5 Authentication) is provided for "
+"compatibility purposes only, use of alterId > 1 is not recommended."
+msgstr ""
+"提供旧协议支持（VMess MD5 身份验证）仅出于兼容性目的，不建议使用 alterId > "
+"1。"
+
+msgid "Less compatibility and sometimes better performance."
+msgstr "有时性能更好。"
+
+msgid "Let's Encrypt"
+msgstr "Let's Encrypt"
+
+msgid ""
+"List of IP (v4 or v6) addresses prefixes to be assigned to the interface."
+msgstr "分配给接口的 IP（v4 或 v6）地址前缀列表。"
+
+msgid "List of nodes to test."
+msgstr "要测试的节点列表。"
+
+msgid "List of supported application level protocols, in order of preference."
+msgstr "支持的应用层协议协商列表，按顺序排列。"
+
+msgid "List of text DNS record to respond as answers."
+msgstr "要响应的 DNS 记录列表。"
+
+msgid "List of text DNS record to respond as extra records."
+msgstr "要响应的附加 DNS 记录列表。"
+
+msgid "List of text DNS record to respond as name servers."
+msgstr "要响应的域名服务器（NS） DNS 记录列表。"
+
+msgid "Listen address"
+msgstr "监听地址"
+
+msgid "Listen interfaces"
+msgstr "监听接口"
+
+msgid "Listen port"
+msgstr "监听端口"
+
+msgid "Loading"
+msgstr "加载中"
+
+msgid "Local"
+msgstr "本地"
+
+msgid "Local address"
+msgstr "本地地址"
+
+msgid "Log file does not exist."
+msgstr "日志文件不存在。"
+
+msgid "Log is empty."
+msgstr "日志为空。"
+
+msgid "MTU"
+msgstr "MTU"
+
+msgid "Main UDP node"
+msgstr "主 UDP 节点"
+
+msgid "Main node"
+msgstr "主节点"
+
+msgid "Make IP CIDR in rule set used to match the source IP."
+msgstr "使规则集中的 IP CIDR 用于匹配源 IP。"
+
+msgid "Make IP CIDR in rule sets match the source IP."
+msgstr "使规则集中的 IP CIDR 匹配源 IP。"
+
+msgid "Make IP CIDR in rule-sets accept empty query response."
+msgstr "使规则集中的 IP CIDR 接受空查询响应。"
+
+msgid ""
+"Make each DNS server's cache independent for special purposes. If enabled, "
+"will slightly degrade performance."
+msgstr "独立缓存每个 DNS 服务器的结果以供特殊用途。启用后会略微降低性能。"
+
+msgid "Masquerade"
+msgstr "伪装"
+
+msgid ""
+"Match IP CIDR with query response. Current rule will be skipped if not match."
+msgstr "使用查询响应匹配 IP CIDR。如果不匹配，则跳过当前规则。"
+
+msgid "Match IP CIDR."
+msgstr "匹配 IP CIDR。"
+
+msgid "Match domain suffix."
+msgstr "匹配域名后缀。"
+
+msgid "Match domain using keyword."
+msgstr "使用关键词匹配域名。"
+
+msgid "Match domain using regular expression."
+msgstr "使用正则表达式匹配域名。"
+
+msgid "Match full domain."
+msgstr "匹配完整域名。"
+
+msgid "Match port range. Format as START:/:END/START:END."
+msgstr "匹配端口范围。格式为 START:/:END/START:END。"
+
+msgid "Match port."
+msgstr "匹配端口。"
+
+msgid "Match private IP"
+msgstr "匹配私有 IP"
+
+msgid "Match private IP with query response."
+msgstr "使用查询响应匹配私有 IP。"
+
+msgid "Match private source IP"
+msgstr "匹配私有源 IP"
+
+msgid "Match process name."
+msgstr "匹配进程名。"
+
+msgid "Match process path using regular expression."
+msgstr "使用正则表达式匹配进程路径。"
+
+msgid "Match process path."
+msgstr "匹配进程路径。"
+
+msgid "Match query type."
+msgstr "匹配请求类型。"
+
+msgid "Match rule set."
+msgstr "匹配规则集。"
+
+msgid "Match source IP CIDR."
+msgstr "匹配源 IP CIDR。"
+
+msgid "Match source port range. Format as START:/:END/START:END."
+msgstr "匹配源端口范围。格式为 START:/:END/START:END。"
+
+msgid "Match source port."
+msgstr "匹配源端口。"
+
+msgid "Match user name."
+msgstr "匹配用户名。"
+
+msgid "Max download speed"
+msgstr "最大下载速度"
+
+msgid "Max download speed in Mbps."
+msgstr "最大下载速度（Mbps）。"
+
+msgid "Max time difference"
+msgstr "最大时间差"
+
+msgid "Max upload speed"
+msgstr "最大上传速度"
+
+msgid "Max upload speed in Mbps."
+msgstr "最大上传速度（Mbps）。"
+
+msgid "Maximum TLS version"
+msgstr "最大 TLS 版本"
+
+msgid "Maximum connections"
+msgstr "最大连接数"
+
+msgid ""
+"Maximum multiplexed streams in a connection before opening a new connection."
+"<br/>Conflict with <code>%s</code> and <code>%s</code>."
+msgstr ""
+"在打开新连接之前，连接中的最大多路复用流数量。与 <code>%s</code> 和 "
+"<code>%s</code> 冲突。"
+
+msgid "Maximum streams"
+msgstr "最大流数量"
+
+msgid "Method"
+msgstr "方式"
+
+msgid "Minimum TLS version"
+msgstr "最低 TLS 版本"
+
+msgid "Minimum idle sessions"
+msgstr "最小空闲会话数"
+
+msgid ""
+"Minimum multiplexed streams in a connection before opening a new connection."
+msgstr "在打开新连接之前，连接中的最小多路复用流数量。"
+
+msgid "Minimum streams"
+msgstr "最小流数量"
+
+msgid "Mixed"
+msgstr "混合"
+
+msgid "Mixed <code>system</code> TCP stack and <code>gVisor</code> UDP stack."
+msgstr "混合<code>系统</code> TCP 栈和 <code>gVisor</code> UDP 栈。"
+
+msgid "Mode"
+msgstr "模式"
+
+msgid "MultiPath TCP"
+msgstr "多路径 TCP（MPTCP）"
+
+msgid "Multiplex"
+msgstr "多路复用"
+
+msgid "Multiplex protocol."
+msgstr "多路复用协议。"
+
+msgid "NOT RUNNING"
+msgstr "未运行"
+
+msgid "NOTE: Save current settings before updating subscriptions."
+msgstr "注意：更新订阅前先保存当前配置。"
+
+msgid "NS"
+msgstr "NS"
+
+msgid "Native"
+msgstr "原生"
+
+msgid "NaïveProxy"
+msgstr "NaïveProxy"
+
+msgid "Network"
+msgstr "网络"
+
+msgid "New Reno"
+msgstr "New Reno"
+
+msgid "No TCP transport, plain HTTP is merged into the HTTP transport."
+msgstr "无 TCP 传输层, 纯 HTTP 已合并到 HTTP 传输层。"
+
+msgid "No additional encryption support: It's basically duplicate encryption."
+msgstr "无额外加密支持：它基本上是重复加密。"
+
+msgid "No subscription available"
+msgstr "无可用订阅"
+
+msgid "No subscription node"
+msgstr "无订阅节点"
+
+msgid "No valid share link found."
+msgstr "找不到有效分享链接。"
+
+msgid "Node"
+msgstr "节点"
+
+msgid "Node Settings"
+msgstr "节点设置"
+
+msgid "Nodes"
+msgstr "节点"
+
+msgid "None"
+msgstr "无"
+
+msgid "Obfuscate password"
+msgstr "混淆密码"
+
+msgid "Obfuscate type"
+msgstr "混淆类型"
+
+msgid "Only process traffic from specific interfaces. Leave empty for all."
+msgstr "只处理来自指定接口的流量。留空表示全部。"
+
+msgid "Only proxy mainland China"
+msgstr "仅代理中国大陆"
+
+msgid "Other fields"
+msgstr "其他字段"
+
+msgid "Outbound"
+msgstr "出站"
+
+msgid "Outbound node"
+msgstr "出站节点"
+
+msgid "Override address"
+msgstr "覆盖地址"
+
+msgid "Override destination"
+msgstr "覆盖目标地址"
+
+msgid "Override port"
+msgstr "覆盖端口"
+
+msgid "Override the connection destination address with the sniffed domain."
+msgstr "使用嗅探到的域名覆盖连接目标。"
+
+msgid "Override the connection destination address."
+msgstr "覆盖目标连接地址。"
+
+msgid "Override the connection destination port."
+msgstr "覆盖目标连接端口。"
+
+msgid "PUT"
+msgstr "PUT"
+
+msgid "Packet encoding"
+msgstr "数据包编码"
+
+msgid "Padding scheme"
+msgstr "填充方案"
+
+msgid "Panic"
+msgstr "崩溃"
+
+msgid "Password"
+msgstr "密码"
+
+msgid "Path"
+msgstr "路径"
+
+msgid "Peer pubkic key"
+msgstr "对端公钥"
+
+msgid ""
+"Performance may degrade slightly, so it is not recommended to enable on when "
+"it is not needed."
+msgstr "性能可能会略有下降，建议仅在需要时开启。"
+
+msgid "Persistent keepalive interval"
+msgstr "持久 keepalive 间隔"
+
+msgid "Ping timeout"
+msgstr "Ping 超时"
+
+msgid "Plugin"
+msgstr "插件"
+
+msgid "Plugin opts"
+msgstr "插件参数"
+
+msgid "Port"
+msgstr "端口"
+
+msgid "Port %s alrealy exists!"
+msgstr "端口 %s 已存在！"
+
+msgid "Port fields"
+msgstr "端口字段"
+
+msgid "Port hopping interval in seconds."
+msgstr "端口跳跃间隔（单位：秒）。"
+
+msgid "Port range"
+msgstr "端口范围"
+
+msgid "Pre-shared key"
+msgstr "预共享密钥"
+
+msgid "Predefined"
+msgstr "预定义"
+
+msgid "Prefer IPv4"
+msgstr "优先 IPv4"
+
+msgid "Prefer IPv6"
+msgstr "优先 IPv6"
+
+msgid "Private key"
+msgstr "私钥"
+
+msgid "Private key passphrase"
+msgstr "私钥指纹"
+
+msgid "Process fields"
+msgstr "进程字段"
+
+msgid "Process name"
+msgstr "进程名"
+
+msgid "Process path"
+msgstr "进程路径"
+
+msgid "Process path (regex)"
+msgstr "进程路径（正则表达式）"
+
+msgid "Protocol"
+msgstr "协议"
+
+msgid "Protocol parameter. Enable length block encryption."
+msgstr "协议参数。启用长度块加密。"
+
+msgid ""
+"Protocol parameter. Will waste traffic randomly if enabled (enabled by "
+"default in v2ray and cannot be disabled)."
+msgstr "协议参数。 如启用会随机浪费流量（在 v2ray 中默认启用并且无法禁用）。"
+
+msgid "Proxy Domain List"
+msgstr "代理域名列表"
+
+msgid "Proxy IPv4 IP-s"
+msgstr "代理 IPv4 地址"
+
+msgid "Proxy IPv6 IP-s"
+msgstr "代理 IPv6 地址"
+
+msgid "Proxy MAC-s"
+msgstr "代理 MAC 地址"
+
+msgid "Proxy all except listed"
+msgstr "仅允许列表外"
+
+msgid "Proxy filter mode"
+msgstr "代理过滤模式"
+
+msgid "Proxy listed only"
+msgstr "仅允许列表内"
+
+msgid "Proxy mode"
+msgstr "代理模式"
+
+msgid "Proxy protocol"
+msgstr "代理协议"
+
+msgid "QUIC"
+msgstr "QUIC"
+
+msgid "QUIC congestion control algorithm."
+msgstr "QUIC 拥塞控制算法。"
+
+msgid "QUIC connection receive window"
+msgstr "QUIC 连接窗口"
+
+msgid "QUIC maximum concurrent bidirectional streams"
+msgstr "QUIC 最大双向并发流"
+
+msgid "QUIC stream receive window"
+msgstr "QUIC 流接收窗口"
+
+msgid "Query type"
+msgstr "请求类型"
+
+msgid "RCode"
+msgstr "RCode"
+
+msgid "RDP"
+msgstr "RDP"
+
+msgid "RDRC timeout"
+msgstr "RDRC 超时"
+
+msgid "REALITY"
+msgstr "REALITY"
+
+msgid "REALITY private key"
+msgstr "REALITY 私钥"
+
+msgid "REALITY public key"
+msgstr "REALITY 公钥"
+
+msgid "REALITY short ID"
+msgstr "REALITY 标识符"
+
+msgid "RUNNING"
+msgstr "运行中"
+
+msgid "Random version will be used if empty."
+msgstr "如留空，则使用随机版本。"
+
+msgid "Recursive outbound detected!"
+msgstr "检测到递归出站！"
+
+msgid "Recursive resolver detected!"
+msgstr "检测到递归解析器！"
+
+msgid "Redirect TCP"
+msgstr "Redirect TCP"
+
+msgid "Redirect TCP + TProxy UDP"
+msgstr "Redirect TCP + TProxy UDP"
+
+msgid "Redirect TCP + Tun UDP"
+msgstr "Redirect TCP + Tun UDP"
+
+msgid "Refresh every %s seconds."
+msgstr "每 %s 秒刷新。"
+
+msgid "Region ID"
+msgstr "区域 ID"
+
+msgid "Reject"
+msgstr "拒绝"
+
+msgid "Remote"
+msgstr "远程"
+
+msgid "Remove %s nodes"
+msgstr "移除 %s 个节点"
+
+msgid "Remove all nodes from subscriptions"
+msgstr "移除所有订阅节点"
+
+msgid "Reply with REFUSED"
+msgstr "回复 REFUSED"
+
+msgid "Reply with TCP RST / ICMP port unreachable"
+msgstr "回复 TCP RST / ICMP 端口不可达"
+
+msgid "Reserved field bytes"
+msgstr "保留字段字节"
+
+msgid "Resolve"
+msgstr "解析"
+
+msgid "Resolve strategy"
+msgstr "解析策略"
+
+msgid "Resources management"
+msgstr "资源管理"
+
+msgid "Reuse address"
+msgstr "复用地址"
+
+msgid "Reuse listener address."
+msgstr "复用监听地址。"
+
+msgid "Rewrite TTL"
+msgstr "重写 TTL"
+
+msgid "Rewrite TTL in DNS responses."
+msgstr "在 DNS 响应中重写 TTL。"
+
+msgid "Route"
+msgstr "路由"
+
+msgid "Route options"
+msgstr "路由选项"
+
+msgid "Routing Nodes"
+msgstr "路由节点"
+
+msgid "Routing Rules"
+msgstr "路由规则"
+
+msgid "Routing Settings"
+msgstr "路由设置"
+
+msgid "Routing mode"
+msgstr "路由模式"
+
+msgid "Routing node"
+msgstr "路由节点"
+
+msgid "Routing ports"
+msgstr "路由端口"
+
+msgid "Routing rule"
+msgstr "路由规则"
+
+msgid "Rule Set"
+msgstr "规则集"
+
+msgid "Rule set"
+msgstr "规则集"
+
+msgid "Rule set IP CIDR as source IP"
+msgstr "规则集 IP CIDR 作为源 IP"
+
+msgid "Rule set URL"
+msgstr "规则集 URL"
+
+msgid "SSH"
+msgstr "SSH"
+
+msgid "STUN"
+msgstr "STUN"
+
+msgid "SUoT version"
+msgstr "SUoT 版本"
+
+msgid "Safari / Apple Network API"
+msgstr "Safari / Apple Network API"
+
+msgid "Salamander"
+msgstr "Salamander"
+
+msgid "Same as main node"
+msgstr "保持与主节点一致"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Save current settings"
+msgstr "保存当前设置"
+
+msgid "Save subscriptions settings"
+msgstr "保存订阅设置"
+
+msgid "Server"
+msgstr "服务器"
+
+msgid "Server Settings"
+msgstr "服务器设置"
+
+msgid ""
+"Server name to use when choosing a certificate if the ClientHello's "
+"ServerName field is empty."
+msgstr "当 ClientHello 的 ServerName 字段为空时，选择证书所使用的服务器名称。"
+
+msgid "Server settings"
+msgstr "服务器设置"
+
+msgid "Service Status"
+msgstr "服务状态"
+
+msgid "Set domain strategy for this query."
+msgstr "为此查询设置域名策略。"
+
+msgid "ShadowTLS"
+msgstr "ShadowTLS"
+
+msgid "ShadowTLS version"
+msgstr "ShadowTLS 版本"
+
+msgid "Shadowsocks"
+msgstr "Shadowsocks"
+
+msgid "Sniffed client type (QUIC client type or SSH client name)."
+msgstr "嗅探到的客户端类型（QUIC 客户端类型或 SSH 客户端名称）。"
+
+msgid ""
+"Sniffed protocol, see <a target=\"_blank\" href=\"https://sing-box.sagernet."
+"org/configuration/route/sniff/\">Sniff</a> for details."
+msgstr ""
+"嗅探协议，具体参见 <a target=\"_blank\" href=\"https://sing-box.sagernet.org/"
+"configuration/route/sniff/\">Sniff</a>。"
+
+msgid "Socks"
+msgstr "Socks"
+
+msgid "Socks version"
+msgstr "Socks 版本"
+
+msgid "Socks4"
+msgstr "Socks4"
+
+msgid "Socks4A"
+msgstr "Socks4A"
+
+msgid "Socks5"
+msgstr "Socks5"
+
+msgid "Source IP CIDR"
+msgstr "源 IP CIDR"
+
+msgid "Source file"
+msgstr "源文件"
+
+msgid "Source port"
+msgstr "源端口"
+
+msgid "Source port range"
+msgstr "源端口范围"
+
+msgid ""
+"Specifies DNS server tag to use instead of selecting through DNS routing."
+msgstr "指定使用的 DNS 服务器，而不是通过 DNS 规则选择。"
+
+msgid ""
+"Specifies the period of time (in seconds) after which a health check will be "
+"performed using a ping frame if no frames have been received on the "
+"connection.<br/>Please note that a ping response is considered a received "
+"frame, so if there is no other traffic on the connection, the health check "
+"will be executed every interval."
+msgstr ""
+"如果连接上没有收到任何帧，指定一段时间（单位：秒）后将使用 PING 帧执行健康检"
+"查。<br/>需要注意的是，PING 响应被视为已接收的帧，因此如果连接上没有其他流"
+"量，则健康检查将在每个间隔执行一次。"
+
+msgid ""
+"Specifies the time (in seconds) until idle clients should be closed with a "
+"GOAWAY frame. PING frames are not considered as activity."
+msgstr ""
+"指定闲置客户端应在多长时间（单位：秒）内使用 GOAWAY 帧关闭。PING 帧不被视为活"
+"动。"
+
+msgid ""
+"Specifies the timeout duration (in seconds) after sending a PING frame, "
+"within which a response must be received.<br/>If a response to the PING "
+"frame is not received within the specified timeout duration, the connection "
+"will be closed."
+msgstr ""
+"指定发送 PING 帧后，在指定的超时时间（单位：秒）内必须接收到响应。<br/>如果在"
+"指定的超时时间内没有收到 PING 帧的响应，则连接将关闭。"
+
+msgid ""
+"Specify target ports to be proxied. Multiple ports must be separated by "
+"commas."
+msgstr "指定需要被代理的目标端口。多个端口必须用逗号隔开。"
+
+msgid "Store RDRC"
+msgstr "存储 RDRC"
+
+msgid ""
+"Store rejected DNS response cache.<br/>The check results of <code>Address "
+"filter DNS rule items</code> will be cached until expiration."
+msgstr ""
+"存储被拒绝的 DNS 响应缓存。<br/><code>地址过滤 DNS 规则</code> 的检查结果将被"
+"缓存直到过期。"
+
+msgid "String"
+msgstr "字符串"
+
+msgid "Sub (%s)"
+msgstr "订阅（%s）"
+
+msgid "Subscription URL-s"
+msgstr "订阅地址"
+
+msgid "Subscriptions"
+msgstr "订阅"
+
+msgid "Successfully imported %s nodes of total %s."
+msgstr "成功导入 %s 个节点，共 %s 个。"
+
+msgid "Successfully updated."
+msgstr "更新成功。"
+
+msgid ""
+"Support Hysteria, Shadowsocks, Trojan, v2rayN (VMess), and XTLS (VLESS) "
+"online configuration delivery standard."
+msgstr ""
+"支持 Hysteria、Shadowsocks、Trojan、v2rayN（VMess）和 XTLS（VLESS）在线配置交"
+"付标准。"
+
+msgid ""
+"Support UDP, TCP, DoH, DoQ, DoT. TCP protocol will be used if not specified."
+msgstr "支持 UDP、TCP、DoH、DoQ、DoT。如未指定则使用 TCP 协议。"
+
+msgid "System"
+msgstr "系统"
+
+msgid "System DNS"
+msgstr "系统 DNS"
+
+msgid "TCP"
+msgstr "TCP"
+
+msgid "TCP fast open"
+msgstr "TCP 快速打开"
+
+msgid "TCP/IP stack"
+msgstr "TCP/IP 协议栈"
+
+msgid "TCP/IP stack."
+msgstr "TCP/IP 协议栈。"
+
+msgid "TLS"
+msgstr "TLS"
+
+msgid "TLS ALPN"
+msgstr "TLS ALPN"
+
+msgid "TLS SNI"
+msgstr "TLS SNI"
+
+msgid "TLS fragment"
+msgstr "TLS 分片"
+
+msgid "TLS is not enforced. If TLS is not configured, plain HTTP 1.1 is used."
+msgstr "不强制执行 TLS。如未配置 TLS，将使用纯 HTTP 1.1。"
+
+msgid "TLS record fragment"
+msgstr "TLS 记录分片"
+
+msgid ""
+"Tag of a another server to resolve the domain name in the address. Required "
+"if address contains domain."
+msgstr ""
+"用于解析本 DNS 服务器的域名的另一个 DNS 服务器的标签。如果服务器地址包括域名"
+"则必须。"
+
+msgid "Tag of an outbound for connecting to the dns server."
+msgstr "用于连接到 DNS 服务器的出站标签。"
+
+msgid "Tag of the outbound to download rule set."
+msgstr "用于下载规则集的出站标签。"
+
+msgid "Tag of the target dns server."
+msgstr "目标 DNS 服务器标签。"
+
+msgid "Tag of the target outbound."
+msgstr "目标出站标签。"
+
+msgid ""
+"Tell the client to use the BBR flow control algorithm instead of Hysteria CC."
+msgstr "让客户端使用 BBR 流控算法。"
+
+msgid "Tencent Public DNS (119.29.29.29)"
+msgstr "腾讯公共 DNS（119.29.29.29）"
+
+msgid "Test URL"
+msgstr "测试 URL"
+
+msgid "Test interval"
+msgstr "测试间隔"
+
+msgid "Test interval must be less or equal than idle timeout."
+msgstr "测试间隔时间必须小于或等于空闲超时时间。"
+
+msgid "Test tolerance"
+msgstr "测试容差"
+
+msgid "The ACME CA provider to use."
+msgstr "使用的 ACME CA 颁发机构。"
+
+msgid "The DNS strategy for resolving the domain name in the address."
+msgstr "解析域名的默认策略。"
+
+msgid "The QUIC connection-level flow control window for receiving data."
+msgstr "用于接收数据的 QUIC 连接级流控制窗口。"
+
+msgid "The QUIC stream-level flow control window for receiving data."
+msgstr "用于接收数据的 QUIC 流级流控制窗口。"
+
+msgid "The URL to test."
+msgstr "用于测试的 URL。"
+
+msgid "The address of the dns server."
+msgstr "DNS 服务器的地址。"
+
+msgid ""
+"The alternate port to use for the ACME HTTP challenge; if non-empty, this "
+"port will be used instead of 80 to spin up a listener for the HTTP challenge."
+msgstr ""
+"用于 ACME HTTP 质询的备用端口；如果非空，将使用此端口而不是 80 来启动 HTTP 质"
+"询的侦听器。"
+
+msgid ""
+"The alternate port to use for the ACME TLS-ALPN challenge; the system must "
+"forward 443 to this port for challenge to succeed."
+msgstr ""
+"用于 ACME TLS-ALPN 质询的备用端口； 系统必须将 443 转发到此端口以使质询成功。"
+
+msgid ""
+"The default rule uses the following matching logic:<br/><code>(domain || "
+"domain_suffix || domain_keyword || domain_regex || ip_cidr || "
+"ip_is_private)</code> &&<br/><code>(port || port_range)</code> &&<br/"
+"><code>(source_ip_cidr || source_ip_is_private)</code> &&<br/"
+"><code>(source_port || source_port_range)</code> &&<br/><code>other fields</"
+"code>.<br/>Additionally, included rule sets can be considered merged rather "
+"than as a single rule sub-item."
+msgstr ""
+"默认规则使用以下匹配逻辑：<br/><code>(domain || domain_suffix || "
+"domain_keyword || domain_regex || ip_cidr || ip_is_private)</code> &&<br/"
+"><code>(port || port_range)</code> &&<br/><code>(source_ip_cidr || "
+"source_ip_is_private)</code> &&<br/><code>(source_port || "
+"source_port_range)</code> &&<br/><code>其他字段</code>。此外，包含的所有规则"
+"集会被合并而不是独立生效。"
+
+msgid ""
+"The default rule uses the following matching logic:<br/><code>(domain || "
+"domain_suffix || domain_keyword || domain_regex)</code> &&<br/><code>(port "
+"|| port_range)</code> &&<br/><code>(source_ip_cidr || source_ip_is_private)</"
+"code> &&<br/><code>(source_port || source_port_range)</code> &&<br/"
+"><code>other fields</code>.<br/>Additionally, included rule sets can be "
+"considered merged rather than as a single rule sub-item."
+msgstr ""
+"默认规则使用以下匹配逻辑：<br/><code>(domain || domain_suffix || "
+"domain_keyword || domain_regex)</code> &&<br/><code>(port || port_range)</"
+"code> &&<br/><code>(source_ip_cidr || source_ip_is_private)</code> &&<br/"
+"><code>(source_port || source_port_range)</code> &&<br/><code>其他字段</"
+"code>。此外，包含的所有规则集会被合并而不是独立生效。"
+
+msgid ""
+"The dns server for resolving China domains. Support UDP, TCP, DoH, DoQ, DoT."
+msgstr "用于解析国内域名的 DNS 服务器。支持 UDP、TCP、DoH、DoQ、DoT。"
+
+msgid "The domain strategy for resolving the domain name in the address."
+msgstr "用于解析本 DNS 服务器的域名的策略。"
+
+msgid ""
+"The elliptic curves that will be used in an ECDHE handshake, in preference "
+"order. If empty, the default will be used."
+msgstr "将在 ECDHE 握手中使用的椭圆曲线，按优先顺序排列。留空使用默认值。"
+
+msgid ""
+"The email address to use when creating or selecting an existing ACME server "
+"account."
+msgstr "创建或选择现有 ACME 服务器帐户时使用的电子邮件地址。"
+
+msgid ""
+"The fallback value in milliseconds used when TLS segmentation cannot "
+"automatically determine the wait time."
+msgstr "当 TLS 分段无法自动确定等待时间时使用的回退值（单位：毫秒）。"
+
+msgid "The idle timeout in seconds."
+msgstr "空闲超时时间（单位：秒）。"
+
+msgid "The maximum TLS version that is acceptable."
+msgstr "可接受的最高 TLS 版本。"
+
+msgid ""
+"The maximum number of QUIC concurrent bidirectional streams that a peer is "
+"allowed to open."
+msgstr "允许对等点打开的 QUIC 并发双向流的最大数量。"
+
+msgid "The maximum time difference between the server and the client."
+msgstr "服务器和客户端之间的最大时间差。"
+
+msgid "The minimum TLS version that is acceptable."
+msgstr "可接受的最低 TLS 版本。"
+
+msgid "The modern ImmortalWrt proxy platform for ARM64/AMD64."
+msgstr "为 ARM64/AMD64 设计的现代 ImmortalWrt 代理平台。"
+
+msgid "The network interface to bind to."
+msgstr "绑定到的网络接口。"
+
+msgid "The path of the DNS server."
+msgstr "DNS 服务器的路径。"
+
+msgid ""
+"The path to the ECH config, in PEM format. If empty, load from DNS will be "
+"attempted."
+msgstr "PEM 格式的 ECH 配置路径。如果为空，将尝试从 DNS 加载。"
+
+msgid "The path to the server certificate, in PEM format."
+msgstr "服务端证书路径，需要 PEM 格式。"
+
+msgid "The port must be unique."
+msgstr "必须是唯一端口。"
+
+msgid "The port of the DNS server."
+msgstr "DNS 服务器的端口。"
+
+msgid "The response code."
+msgstr "响应代码。"
+
+msgid "The server private key, in PEM format."
+msgstr "服务端私钥，需要 PEM 格式。"
+
+msgid "The server public key, in PEM format."
+msgstr "服务端公钥，需要 PEM 格式。"
+
+msgid ""
+"The tag of the upstream outbound.<br/>Other dial fields will be ignored when "
+"enabled."
+msgstr "上游出站的标签。<br/>启用时，其他拨号字段将被忽略。"
+
+msgid "The test interval in seconds."
+msgstr "测试间隔时间（单位：秒）。"
+
+msgid "The test tolerance in milliseconds."
+msgstr "测试容差时间（单位：毫秒）。"
+
+msgid ""
+"The timeout (in seconds) that after performing a keepalive check, the client "
+"will wait for activity. If no activity is detected, the connection will be "
+"closed."
+msgstr ""
+"经过一段时间（单位：秒）之后，客户端将执行 keepalive 检查并等待活动。如果没有"
+"检测到任何活动，则会关闭连接。"
+
+msgid ""
+"This is <strong>DANGEROUS</strong>, your traffic is almost like "
+"<strong>PLAIN TEXT</strong>! Use at your own risk!"
+msgstr ""
+"这是危险行为，您的流量将几乎等同于<strong>明文</strong>！使用风险自负！"
+
+msgid ""
+"This is the TUIC port of the UDP over TCP protocol, designed to provide a "
+"QUIC stream based UDP relay mode that TUIC does not provide."
+msgstr ""
+"这是 TUIC 的 UDP over TCP 协议移植， 旨在提供 TUIC 不提供的基于 QUIC 流的 "
+"UDP 中继模式。"
+
+msgid "ThreatBook Public DNS (117.50.10.10)"
+msgstr "微步在线公共 DNS（117.50.10.10）"
+
+msgid ""
+"Timeout for UDP connections.<br/>Setting a larger value than the UDP timeout "
+"in inbounds will have no effect."
+msgstr "UDP 连接的超时时间。<br/>设置比入站的 UDP 超时更大的值将无效。"
+
+msgid ""
+"Timeout of rejected DNS response cache in seconds. <code>604800 (7d)</code> "
+"is used by default."
+msgstr ""
+"被拒绝的 DNS 响应缓存超时时间（单位：秒）。默认为 <code>604800（7 天）</"
+"code>。"
+
+msgid ""
+"To be compatible with Xray-core, set this to <code>Sec-WebSocket-Protocol</"
+"code>."
+msgstr ""
+"要与 Xray-core 兼容，请将其设置为 <code>Sec-WebSocket-Protocol</code>。"
+
+msgid ""
+"To enable Tun support, you need to install <code>ip-full</code> and "
+"<code>kmod-tun</code>"
+msgstr ""
+"要启用 Tun 支持，您需要安装 <code>ip-full</code> 和 <code>kmod-tun</code>。"
+
+msgid "Trace"
+msgstr "跟踪"
+
+msgid "Transport"
+msgstr "传输层"
+
+msgid "Trojan"
+msgstr "Trojan"
+
+msgid "Tuic"
+msgstr "Tuic"
+
+msgid "Tun TCP/UDP"
+msgstr "Tun TCP/UDP"
+
+msgid "Type"
+msgstr "类型"
+
+msgid "UDP"
+msgstr "UDP"
+
+msgid "UDP Fragment"
+msgstr "UDP 分片"
+
+msgid "UDP NAT expiration time"
+msgstr "UDP NAT 过期时间"
+
+msgid "UDP over TCP"
+msgstr "UDP over TCP"
+
+msgid "UDP over stream"
+msgstr "UDP over stream"
+
+msgid "UDP packet relay mode."
+msgstr "UDP 包中继模式。"
+
+msgid "UDP relay mode"
+msgstr "UDP 中继模式"
+
+msgid "UDP timeout"
+msgstr "UDP 超时"
+
+msgid "URLTest"
+msgstr "URLTest"
+
+msgid "URLTest nodes"
+msgstr "URLTest 节点"
+
+msgid "UUID"
+msgstr "UUID"
+
+msgid "Unknown error."
+msgstr "未知错误。"
+
+msgid "Unknown error: %s"
+msgstr "未知错误：%s"
+
+msgid "Unsupported fingerprint!"
+msgstr "不支持的指纹！"
+
+msgid "Update %s subscriptions"
+msgstr "更新 %s 个订阅"
+
+msgid "Update failed."
+msgstr "更新失败。"
+
+msgid "Update interval"
+msgstr "更新间隔"
+
+msgid "Update interval of rule set."
+msgstr "规则集更新间隔。"
+
+msgid "Update nodes from subscriptions"
+msgstr "从订阅更新节点"
+
+msgid "Update subscriptions via proxy."
+msgstr "使用代理更新订阅。"
+
+msgid "Update time"
+msgstr "更新时间"
+
+msgid "Update via proxy"
+msgstr "使用代理更新"
+
+msgid "Upload ECH config"
+msgstr "上传 ECH 配置"
+
+msgid "Upload bandwidth"
+msgstr "上传带宽"
+
+msgid "Upload bandwidth in Mbps."
+msgstr "上传带宽（单位：Mbps）。"
+
+msgid "Upload certificate"
+msgstr "上传证书"
+
+msgid "Upload key"
+msgstr "上传密钥"
+
+msgid "Upload..."
+msgstr "上传..."
+
+msgid "Use ACME TLS certificate issuer."
+msgstr "使用 ACME TLS 证书颁发机构。"
+
+msgid ""
+"Used to verify the hostname on the returned certificates unless insecure is "
+"given."
+msgstr "用于验证返回证书上的主机名。如允许不安全连接，此配置无效。"
+
+msgid "Used to verify the hostname on the returned certificates."
+msgstr "用于验证返回证书上的主机名。"
+
+msgid "User"
+msgstr "用户"
+
+msgid "User-Agent"
+msgstr "用户代理"
+
+msgid "Username"
+msgstr "用户名"
+
+msgid "VLESS"
+msgstr "VLESS"
+
+msgid "VMess"
+msgstr "VMess"
+
+msgid "WAN DNS (read from interface)"
+msgstr "WAN DNS（从接口获取）"
+
+msgid "WAN IP Policy"
+msgstr "WAN IP 策略"
+
+msgid "Warn"
+msgstr "警告"
+
+msgid "WebSocket"
+msgstr "WebSocket"
+
+msgid "Whitelist mode"
+msgstr "白名单模式"
+
+msgid "WireGuard"
+msgstr "WireGuard"
+
+msgid "WireGuard peer public key."
+msgstr "WireGuard 对端公钥。"
+
+msgid "WireGuard pre-shared key."
+msgstr "WireGuard 预共享密钥。"
+
+msgid "WireGuard requires base64-encoded private keys."
+msgstr "WireGuard 要求 base64 编码的私钥。"
+
+msgid "Write proxy protocol in the connection header."
+msgstr "在连接头中写入代理协议。"
+
+msgid "Xudp (Xray-core)"
+msgstr "Xudp (Xray-core)"
+
+msgid "Your %s was successfully uploaded. Size: %sB."
+msgstr "您的 %s 已成功上传。大小：%sB。"
+
+msgid "ZeroSSL"
+msgstr "ZeroSSL"
+
+msgid "certificate"
+msgstr "证书"
+
+msgid "connect UDP connections"
+msgstr "主动连接 UDP"
+
+msgid "default"
+msgstr "默认"
+
+msgid "failed"
+msgstr "失败"
+
+msgid "gRPC"
+msgstr "gRPC"
+
+msgid "gRPC permit without stream"
+msgstr "gRPC 允许无活动连接"
+
+msgid "gRPC service name"
+msgstr "gRPC 服务名称"
+
+msgid "gVisor"
+msgstr "gVisor"
+
+msgid "non-empty value"
+msgstr "非空值"
+
+msgid "none"
+msgstr "无"
+
+msgid "packet addr (v2ray-core v5+)"
+msgstr "packet addr (v2ray-core v5+)"
+
+msgid "passed"
+msgstr "通过"
+
+msgid "private key"
+msgstr "私钥"
+
+msgid "quic-go / uquic chrome"
+msgstr "quic-go / uquic chrome"
+
+msgid "uTLS fingerprint"
+msgstr "uTLS 指纹"
+
+msgid ""
+"uTLS is a fork of \"crypto/tls\", which provides ClientHello fingerprinting "
+"resistance."
+msgstr ""
+"uTLS 是 \"crypto/tls\" 的一个分支，拥有抵抗 ClientHello 指纹识别的能力。"
+
+msgid "unchecked"
+msgstr "未检查"
+
+msgid "unique UCI identifier"
+msgstr "独立 UCI 标识"
+
+msgid "unique value"
+msgstr "独立值"
+
+msgid "v1"
+msgstr "v1"
+
+msgid "v2"
+msgstr "v2"
+
+msgid "v3"
+msgstr "v3"
+
+msgid "valid DNS server address"
+msgstr "有效 DNS 服务器地址"
+
+msgid "valid URL"
+msgstr "有效网址"
+
+msgid "valid base64 key with %d characters"
+msgstr "包含 %d 个字符的有效 base64 密钥"
+
+msgid "valid hostname"
+msgstr "有效主机名"
+
+msgid "valid port range (port1:port2)"
+msgstr "有效端口范围（port1:port2）"
+
+msgid "valid port value"
+msgstr "有效端口值"
+
+msgid "valid uuid"
+msgstr "有效 uuid"
+

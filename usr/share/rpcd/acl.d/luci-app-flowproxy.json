@@ -1,0 +1,32 @@
+{
+  "luci-app-flowproxy": {
+    "description": "Grant access to FlowProxy control plane",
+    "read": {
+      "cgi-io": [ "download", "upload" ],
+      "file": {
+        "/var/run/flowproxy/*.log": [ "read" ],
+        "/var/run/flowproxy/jobs/*.json": [ "read" ],
+        "/etc/flowproxy/resources/*.txt": [ "read" ]
+      },
+      "ubus": {
+        "flowproxy.job": [ "status", "log" ],
+        "flowproxy.system": [ "status", "acllist_read", "connection_check", "singbox_get_features", "resources_get_version", "kernel_version_check" ],
+        "uci": [ "get" ]
+      },
+      "uci": [ "flowproxy" ]
+    },
+    "write": {
+      "file": {
+        "/tmp/flowproxy_certificate.tmp": [ "write" ],
+        "/etc/flowproxy/resources/*.txt": [ "write" ],
+        "/var/run/flowproxy/*.log": [ "write" ]
+      },
+      "ubus": {
+        "flowproxy.job": [ "start" ],
+        "flowproxy.system": [ "acllist_write", "certificate_write", "log_clean", "singbox_generator" ],
+        "uci": [ "set", "add", "delete", "apply" ]
+      },
+      "uci": [ "flowproxy" ]
+    }
+  }
+}

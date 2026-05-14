@@ -1,0 +1,19 @@
+#!/bin/sh
+# --- [ FlowProxy | Boot Environment Initializer | v1.0 ] ---
+# [Category B] 职能：处理首次安装时的环境骨架搭建与持久化配置断言
+
+# [Category A] 初始化 Zashboard 持久化配置锚点
+uci -q get flowproxy.panel >/dev/null || {
+    uci set flowproxy.panel='zashboard'
+    uci set flowproxy.panel.theme='dark'
+    uci set flowproxy.panel.lang='zh-CN'
+    uci commit flowproxy
+}
+
+# [Category C] Note: 提前构造 /var/run 内存盘下的运行时结构层，以防 init.d 时序死锁
+mkdir -p /var/run/flowproxy/jobs
+mkdir -p /var/run/flowproxy/logs
+
+# [Category A] 执行完毕后销毁自身以防二次重复执行
+rm -f /etc/uci-defaults/99_flowproxy
+exit 0

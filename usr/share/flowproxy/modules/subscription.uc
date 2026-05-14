@@ -1,0 +1,273 @@
+/**
+ * FlowProxy | modules/subscription.uc | v1.2 (Ultimate Syntax & Padding Safe Edition)
+ * 职责：负责订阅节点拉取、协议深度解析并落地 UCI 格式。
+ * 架构更新：
+ * 1. 彻底清除正则字面量陷阱，保障 Ucode 编译期 100% 存活。
+ * 2. 引入极限纯净 Base64 清洗器与智能 Padding 补全算法，免疫机场劣质数据。
+ */
+
+'use strict';
+
+import { open as fs_open } from 'fs';
+import { PATH, BIN } from 'flowproxy.core.constants';
+import { ERR } from 'flowproxy.core.error';
+import { Success, Fail } from 'flowproxy.core.result';
+import { ExecSafe, shell_escape } from 'flowproxy.core.utils';
+import { log } from 'flowproxy.core.logger';
+
+function _net_fetch(url, user_agent, trace_id) {
+    let tmp_file = sprintf("%s/fp_sub_dl_%d.txt", PATH.RUNTIME, time());
+    
+    let curl_args = ["-s", "-L", "-k", "-4", "--connect-timeout", "15"];
+    if (user_agent && length(user_agent) > 0) {
+        push(curl_args, "-A");
+        push(curl_args, user_agent);
+    }
+    push(curl_args, "-o");
+    push(curl_args, tmp_file);
+    push(curl_args, url);
+
+    ExecSafe(BIN.CURL, curl_args, null, trace_id);
+
+    let content = null;
+    let fd = fs_open(tmp_file, "r");
+    if (fd) { 
+        content = fd.read("all"); 
+        fd.close(); 
+    }
+    ExecSafe(BIN.RM, ["-f", tmp_file], null, trace_id);
+    
+    return (content && length(content) > 0) ? content : null;
+}
+
+function _generate_stable_id(str) {
+    let h1 = 0x12345678, h2 = 0x87654321, h3 = 0x9abcdef0, h4 = 0x0fedcba9;
+    for (let i = 0; i < length(str); i++) {
+        let c = ord(substr(str, i, 1));
+        h1 = ((h1 * 33) + c) % 4294967296;
+        h2 = ((h2 * 65599) + c) % 4294967296;
+        h3 = ((h3 * 31) + c) % 4294967296;
+        h4 = ((h4 * 17) + c) % 4294967296;
+    }
+    return sprintf("%08x%08x%08x%08x", h1, h2, h3, h4);
+}
+
+function _decode_base64_str(str) {
+    if (!str) return null;
+    
+    // 1. 标准 URL-Safe 字符替换 (- -> +, _ -> /)
+    let s = replace(replace(str, regexp('-', 'g'), '+'), regexp('_', 'g'), '/');
+    
+    // 2. 🚨 极限清洗：使用白名单模式，物理抹杀所有不属于 Base64 的垃圾字符
+    s = replace(s, regexp('[^A-Za-z0-9+/=]', 'g'), ""); 
+    
+    // 3. 🚨 智能补齐：机场经常省略等号，导致 Ucode 引擎崩溃，我们手工帮它补齐
+    let mod = length(s) % 4;
+    if (mod === 2) {
+        s += "==";
+    } else if (mod === 3) {
+        s += "=";
+    }
+    
+    try { 
+        return b64dec(s); 
+    } catch(e) { 
+        return null; 
+    }
+}
+
+function _urldecode(str) {
+    if (type(str) !== 'string') return "";
+    let res = replace(str, '+', ' ');
+    let hex_map = { '0':0, '1':1, '2':2, '3':3, '4':4, '5':5, '6':6, '7':7, '8':8, '9':9, 'A':10, 'B':11, 'C':12, 'D':13, 'E':14, 'F':15, 'a':10, 'b':11, 'c':12, 'd':13, 'e':14, 'f':15 };
+    return replace(res, regexp('%([0-9a-fA-F]{2})', 'g'), function(m, h) {
+        let d = hex_map[substr(h, 0, 1)] * 16 + hex_map[substr(h, 1, 1)];
+        return sprintf("%c", d);
+    });
+}
+
+function _parse_url(url_string) {
+    let res = { protocol: "", username: "", password: "", hostname: "", port: "", searchParams: {}, hash: "" };
+    let idx = index(url_string, "://");
+    if (idx < 0) return null;
+    res.protocol = substr(url_string, 0, idx);
+    let payload = substr(url_string, idx + 3);
+    
+    let hash_idx = index(payload, "#");
+    if (hash_idx >= 0) {
+        res.hash = substr(payload, hash_idx + 1);
+        payload = substr(payload, 0, hash_idx);
+    }
+    
+    let qs_idx = index(payload, "?");
+    if (qs_idx >= 0) {
+        let qs = substr(payload, qs_idx + 1);
+        payload = substr(payload, 0, qs_idx);
+        let pairs = split(qs, "&");
+        for (let i = 0; i < length(pairs); i++) {
+            let kv = split(pairs[i], "=");
+            if (length(kv) == 2) res.searchParams[kv[0]] = kv[1];
+        }
+    }
+    
+    let auth_idx = index(payload, "@");
+    let host_port = payload;
+    if (auth_idx >= 0) {
+        let auth = substr(payload, 0, auth_idx);
+        host_port = substr(payload, auth_idx + 1);
+        let up_idx = index(auth, ":");
+        if (up_idx >= 0) {
+            res.username = substr(auth, 0, up_idx);
+            res.password = substr(auth, up_idx + 1);
+        } else {
+            res.username = auth;
+        }
+    }
+    
+    let m = match(host_port, regexp('^(\\[.*?\\]|[^:]+):([0-9]+)$'));
+    if (m) {
+        res.hostname = m[1];
+        res.port = m[2];
+    } else {
+        res.hostname = host_port;
+        res.port = "80"; 
+    }
+    return res;
+}
+
+function _parse_node_uri(uri, global_opts) {
+    let raw_uri = trim(uri);
+    let parts = split(raw_uri, '://');
+    if (length(parts) < 2) return null;
+    
+    let scheme = parts[0];
+    let url = _parse_url(raw_uri);
+    let params = url ? url.searchParams : {};
+    let config = null;
+
+    let default_label = (url && url.hash) ? _urldecode(url.hash) : "";
+    let scheme_upper = uc(scheme); 
+
+    let p_insec = params.allowInsecure || params.insecure || "";
+    let is_insec = (p_insec === '1' || p_insec === 'true') ? '1' : '0';
+
+    let v_json = null, ss_parts, full_dec, full_url, up, dec, hy2_pass;
+
+    switch (scheme) {
+        case 'vless':
+            if (params.type === 'kcp') return null;
+            config = { 
+                label: default_label, type: 'vless', address: url.hostname, port: url.port, uuid: url.username, 
+                tls: (params.security === 'tls' || params.security === 'xtls' || params.security === 'reality') ? '1' : '0', 
+                tls_sni: params.sni || "", tls_utls: params.fp ? _urldecode(params.fp) : "",
+                tls_reality: (params.security === 'reality') ? '1' : '0', 
+                tls_reality_public_key: params.pbk ? _urldecode(params.pbk) : "", tls_reality_short_id: params.sid || "", 
+                vless_flow: (params.security === 'tls' || params.security === 'reality') ? (params.flow || "") : "", 
+                transport: (params.type && params.type !== 'tcp') ? params.type : "", 
+                tls_alpn: params.alpn ? _urldecode(params.alpn) : "", tls_insecure: is_insec 
+            };
+            if (params.type === 'ws') { config.ws_host = params.host ? _urldecode(params.host) : ""; config.ws_path = params.path ? _urldecode(params.path) : ""; } else if (params.type === 'grpc') { config.grpc_servicename = params.serviceName || ""; }
+            break;
+        case 'vmess':
+            try { v_json = json(_decode_base64_str(parts[1])); } catch(e) {}
+            if (v_json && v_json.v == '2') { 
+                config = { 
+                    label: v_json.ps ? _urldecode(v_json.ps) : "", type: 'vmess', address: v_json.add, port: v_json.port + "", uuid: v_json.id, 
+                    vmess_alterid: v_json.aid + "", vmess_encrypt: v_json.scy || 'auto', transport: (v_json.net !== 'tcp') ? (v_json.net || "") : "", 
+                    tls: (v_json.tls === 'tls') ? '1' : '0', tls_sni: v_json.sni || v_json.host || "", tls_utls: v_json.fp || ""
+                }; 
+                if (v_json.net === 'ws') { config.ws_host = v_json.host || ""; config.ws_path = v_json.path || ""; } else if (v_json.net === 'grpc') { config.grpc_servicename = v_json.path || ""; } 
+            }
+            break;
+        case 'ss':
+            dec = _decode_base64_str(url.username);
+            if (!dec && length(url.hostname) > 20) { full_dec = _decode_base64_str(url.hostname); if (full_dec) { full_url = _parse_url("ss://" + full_dec); if (full_url) { up = split(full_url.username, ':'); config = { label: "", type: 'shadowsocks', address: full_url.hostname, port: full_url.port, shadowsocks_encrypt_method: up[0] || "", password: up[1] || "" }; } } } else if (dec) { up = split(dec, ':'); config = { label: "", type: 'shadowsocks', address: url.hostname, port: url.port, shadowsocks_encrypt_method: up[0] || "", password: up[1] || "" }; }
+            if (config) { ss_parts = split(parts[1], '#'); config.label = (length(ss_parts) >= 2) ? _urldecode(ss_parts[1]) : ""; }
+            break;
+        case 'trojan':
+            config = { 
+                label: default_label, type: 'trojan', address: url.hostname, port: url.port, password: _urldecode(url.username), 
+                transport: (params.type && params.type !== 'tcp') ? params.type : "", 
+                tls: '1', tls_sni: params.sni || "", tls_utls: params.fp ? _urldecode(params.fp) : "", tls_insecure: is_insec 
+            };
+            if (params.type === 'ws') { config.ws_host = params.host ? _urldecode(params.host) : ""; config.ws_path = params.path ? _urldecode(params.path) : ""; } else if (params.type === 'grpc') { config.grpc_servicename = params.serviceName || ""; }
+            break;
+        case 'tuic':
+            config = { label: default_label, type: 'tuic', address: url.hostname, port: url.port, uuid: url.username, password: url.password ? _urldecode(url.password) : "", tls: '1', tls_sni: params.sni || "", tuic_congestion_control: params.congestion_control || "", tuic_udp_relay_mode: params.udp_relay_mode || "", tls_alpn: params.alpn ? _urldecode(params.alpn) : "" };
+            break;
+        case 'anytls':
+            config = { label: default_label, type: 'anytls', address: url.hostname, port: url.port, password: _urldecode(url.username), tls: '1', tls_sni: params.sni || "", tls_insecure: is_insec };
+            break;
+        case 'hysteria2':
+        case 'hy2':
+            hy2_pass = url.username ? _urldecode(url.username) : ""; if (url.password) hy2_pass += ":" + _urldecode(url.password);
+            config = { label: default_label, type: 'hysteria2', address: url.hostname, port: url.port, password: hy2_pass, hysteria_obfs_type: params.obfs || "", hysteria_obfs_password: params['obfs-password'] || "", tls: '1', tls_insecure: is_insec, tls_sni: params.sni || "" };
+            break;
+    }
+
+    if (!config || !config.address || config.address === "") return null;
+
+    // [Category B] 职能：清理不可见控制字符
+    // [Category C] Note: 必须使用物理字节字面量 ("\r\n\t")。POSIX ERE 引擎不支持在 [] 内转义，原有的 [\\r\\n\\t] 会被错认为匹配普通字母 r, n, t。
+    config.label = replace(config.label || "", regexp("[\r\n\t]", 'g'), " ");
+    config.label = trim(config.label);
+    
+    if (length(config.label) === 0) config.label = sprintf("[%s] %s:%s", scheme_upper, config.address, config.port);
+    
+    config.address = replace(config.address, regexp('[\\[\\]]', 'g'), '');
+    let finger_raw = sprintf("%s|%s|%s|%s|%s", config.type, config.address, config.port, config.uuid || config.password || "", config.transport || "");
+    config.id = _generate_stable_id(finger_raw);
+
+    if (config.tls === '1' && global_opts.allow_insecure === '1') config.tls_insecure = '1';
+    if (global_opts.packet_encoding && (config.type === 'vless' || config.type === 'vmess')) config.packet_encoding = global_opts.packet_encoding;
+
+    return config;
+}
+
+function fetch_and_parse(airport_cfg, global_opts, trace_id) {
+    log(trace_id, 'INFO', 'SUBSCRIPTION', 'Starting network fetch and parse sequence...');
+
+    try {
+        let res = _net_fetch(airport_cfg.url, global_opts.user_agent, trace_id);
+        
+        if (!res) {
+            return Fail(ERR.E_SYSTEM_BUSY, "Network fetch failed or returned empty payload", trace_id);
+        }
+
+        let lines = [];
+        try { 
+            let j_data = json(res);
+            lines = j_data.servers || j_data; 
+        } catch(json_err) { 
+            let d = _decode_base64_str(res); 
+            lines = d ? split(trim(d), '\n') : []; 
+        }
+
+        let nodes = [];
+        let fp_cache = {};
+        let collision_idx = 0;
+
+        for (let i = 0; i < length(lines); i++) {
+            let n = _parse_node_uri(lines[i], global_opts);
+            if (n) {
+                n.airport_id = airport_cfg.id;
+                while (fp_cache[n.id]) { 
+                    collision_idx++;
+                    n.id = _generate_stable_id(n.id + "|" + collision_idx); 
+                }
+                fp_cache[n.id] = true;
+                push(nodes, n);
+            }
+        }
+
+        log(trace_id, 'INFO', 'SUBSCRIPTION', sprintf('Successfully parsed %d nodes.', length(nodes)));
+        return Success({ nodes: nodes }, 200, trace_id);
+
+    } catch (e) {
+        let err_msg = "" + e;
+        log(trace_id, 'CRIT', 'SUBSCRIPTION', 'Fatal Crash during parsing: ' + err_msg);
+        return Fail(ERR.E_SYSTEM_BUSY, err_msg, trace_id);
+    }
+}
+
+export { fetch_and_parse };

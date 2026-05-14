@@ -1,0 +1,129 @@
+#!/bin/sh /etc/rc.common
+# --- [ FlowProxy | 系统生命周期控制器 init.d | v1.0 Route B Aligned ] ---
+# 职责：严格管理系统生命周期，只负责 procd 实例托管、事件监听与同步网关调用。
+# 约束：严禁包含任何业务逻辑、异步调用或网络状态变更代码。
+
+START=95
+USE_PROCD=1
+
+PROG=/usr/bin/sing-box
+RUN_DIR=/var/run/flowproxy
+CONF_FILE=$RUN_DIR/sing-box-run.json
+LOG_DIR=$RUN_DIR/logs
+JOB_DIR=$RUN_DIR/jobs
+
+# [Category A] 环境隔离声明
+export UCODE_PATH=/usr/share/ucode
+
+# [Category B] 基础环境初始化模块
+# 职责：确保运行时依赖的目录结构和基础状态完整
+prepare_env() {
+    mkdir -p "$RUN_DIR"
+    mkdir -p "$LOG_DIR"
+    mkdir -p "$JOB_DIR"
+
+    # [Category C] Note: 定时任务属于系统级配置，目前由 init.d 阶段统一下发
+    update_cron
+}
+
+update_cron() {
+    # [Category C] Note: 防御性 I/O 断言。确保目标挂载点绝对可用，防止极端精简固件下报 File Not Found
+    touch /etc/crontabs/root 2>/dev/null || true
+    sed -i '/# FlowProxy-Cron/d' /etc/crontabs/root 2>/dev/null || true
+
+    local sub_auto=$(uci -q get flowproxy.subscription.auto_update)
+    local sub_time=$(uci -q get flowproxy.subscription.auto_update_time)
+
+    local asset_auto=$(uci -q get flowproxy.assets.auto_update)
+    local asset_time=$(uci -q get flowproxy.assets.update_time)
+
+    if [ "$sub_auto" = "1" ] && [ -n "$sub_time" ]; then
+        echo "0 $sub_time * * * ubus call flowproxy.job start '{\"type\":\"update_subscriptions\",\"payload\":{\"scope\":\"all\"}}' # FlowProxy-Cron" >> /etc/crontabs/root
+    fi
+
+    if [ "$asset_auto" = "1" ] && [ -n "$asset_time" ]; then
+        echo "0 $asset_time * * * ubus call flowproxy.job start '{\"type\":\"update_assets\",\"payload\":{\"action\":\"update\",\"target\":\"manual\"}}' # FlowProxy-Cron" >> /etc/crontabs/root
+    fi
+
+    /etc/init.d/cron restart
+}
+
+# [Category B] 服务启动入口 (Start Phase)
+# 职责：拦截禁用意图，阻塞调用同步生成网关，托管 procd 实例
+start_service() {
+    # 🚨 架构修复：控制面环境初始化必须前置。
+    # 确保即使节点未配置或服务被禁用，UI 与 Worker 的任务队列目录依然可用。
+    prepare_env
+
+    # 1. 意图拦截 (数据面启动许可验证)
+    local def_out=$(uci -q get flowproxy.routing.default_outbound)
+    if [ "$def_out" = "disabled" ] || [ "$def_out" = "nil" ]; then
+        logger -t flowproxy "[START] Aborted: User intent is DISABLED or NOT READY."
+        return 0
+    fi
+
+    # 2. 阻塞调用同步网关 (Route B 核心)
+    # [Category C] Warning: 必须确保 generate.uc 在失败时返回非 0，以阻断 procd 继续执行
+    logger -t flowproxy "[START] Invoking synchronous runtime gateway..."
+    if ! ucode /usr/share/flowproxy/runtime/generate.uc; then
+        logger -t flowproxy "[START] FATAL: Gateway failed to generate artifact. Start aborted."
+        return 1
+    fi
+
+    # 4. Procd 实例托管
+    if [ -s "$CONF_FILE" ]; then
+        procd_open_instance "main"
+        procd_set_param command "$PROG" run -c "$CONF_FILE"
+        procd_set_param respawn
+        procd_set_param stdout 1
+        procd_set_param stderr 1
+        procd_set_param pidfile /var/run/flowproxy.pid
+
+        # [Category C] Note: 兼容特定内核版本的特性修复
+        uname -r | grep -Eq "^6\.6" && procd_set_param env "QUIC_GO_DISABLE_GSO"="true"
+
+        procd_close_instance
+        logger -t flowproxy "[START] procd instance registered successfully."
+    else
+         logger -t flowproxy "[START] FATAL: Artifact missing after gateway exit. Start aborted."
+         return 1
+    fi
+}
+
+# [Category B] 服务销毁入口 (Stop Phase)
+# 职责：幂等清理网络栈，双重保险清理运行时产物
+stop_service() {
+    logger -t flowproxy "[STOP] Initiating service teardown..."
+
+    # 1. 阻塞调用网络卸载网关
+    # [Category C] Warning: teardown() 必须保证绝对幂等，不能因为文件或规则不存在而抛出异常
+    ucode -e "import { teardown } from 'flowproxy.system.network'; teardown('init');"
+
+    # 2. 物理清除运行时产物 (双重保险)
+    rm -f "$CONF_FILE"
+    rm -f /var/run/flowproxy/*.marker
+    
+    # 3. 🚨 架构修复：回收系统级定时任务，消灭僵尸态泄漏
+    touch /etc/crontabs/root 2>/dev/null || true
+    sed -i '/# FlowProxy-Cron/d' /etc/crontabs/root 2>/dev/null || true
+    /etc/init.d/cron restart >/dev/null 2>&1
+
+    logger -t flowproxy "[STOP] Teardown complete."
+}
+
+# [Category B] 服务重载入口 (Reload Phase)
+# 职责：回归原生语义，通过系统级 restart 实现状态彻底刷新
+reload_service() {
+    logger -t flowproxy "[RELOAD] Intercepted. Delegating to native restart sequence."
+    restart
+}
+
+# [Category B] 事件触发器注册 (Trigger Phase)
+# 职责：监听关键状态变化，驱动生命周期状态机
+service_triggers() {
+    # [Category C] Note: 监听 UCI 配置变动
+    procd_add_reload_trigger "flowproxy"
+    
+    # [Category C] Note: 监听 WAN 接口上线，实现断网重连自愈
+    procd_add_interface_trigger "interface.*.up" wan /etc/init.d/flowproxy restart
+}
