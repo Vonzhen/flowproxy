@@ -72,7 +72,7 @@ echo "[INFO] Generating CONTROL files..."
 cat <<EOF > "$IPKG_DIR/CONTROL/control"
 Package: $PKG_NAME
 Version: $PKG_VERSION-$PKG_RELEASE
-Depends: ucode, ucode-mod-uci, ucode-mod-fs, ucode-mod-math, sing-box, curl, ca-bundle, kmod-tun
+Depends: ucode, ucode-mod-uci, ucode-mod-fs, ucode-mod-math, curl, ca-bundle, kmod-tun
 Section: luci
 Architecture: $PKG_ARCH
 Maintainer: $PKG_MAINTAINER
