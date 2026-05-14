@@ -121,6 +121,6 @@ chmod 0755 "$IPKG_DIR/CONTROL/prerm"
 
 # 5. 调用打包器输出
 echo "[INFO] Executing ipkg-build..."
-ipkg-build -m "$IPKG_DIR" "$BASE_DIR"
+ipkg-build "$IPKG_DIR" "$BASE_DIR"
 
 echo "[SUCCESS] Build complete."
