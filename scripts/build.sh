@@ -26,6 +26,19 @@ echo "[INFO] Mapping Virtual File System..."
 mkdir -p "$IPKG_DIR/usr/share/flowproxy"
 cp -r "${BASE_DIR}/usr/share/flowproxy/"* "$IPKG_DIR/usr/share/flowproxy/"
 
+# 🚨 架构修复：强行浇筑核心资源与数据目录骨架
+echo "[INFO] Provisioning Core Infrastructure Directories..."
+mkdir -p "$IPKG_DIR/etc/flowproxy/resources"
+mkdir -p "$IPKG_DIR/etc/flowproxy/ruleset"
+mkdir -p "$IPKG_DIR/etc/flowproxy/run"
+
+# 容错拷贝：将源码中的物理文件（如 txt 资源）注入骨架
+if [ -d "${BASE_DIR}/etc/flowproxy" ] && [ "$(ls -A ${BASE_DIR}/etc/flowproxy 2>/dev/null)" ]; then
+    cp -r "${BASE_DIR}/etc/flowproxy/"* "$IPKG_DIR/etc/flowproxy/"
+else
+    echo "[INFO] Source /etc/flowproxy is empty or missing. Clean infrastructure provisioned."
+fi
+
 # 生命周期与配置骨架
 mkdir -p "$IPKG_DIR/etc/config"
 cp "${BASE_DIR}/etc/config/flowproxy" "$IPKG_DIR/etc/config/"
