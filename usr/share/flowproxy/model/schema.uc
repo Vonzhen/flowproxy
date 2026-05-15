@@ -52,7 +52,7 @@ function build_inbounds(u) {
         push(inbounds, { type: 'tproxy', tag: 'tproxy-in', listen: '::', listen_port: strToInt(tproxy_port), network: 'udp', udp_timeout: strToTime(udp_timeout) });
     }
     if (match(proxy_mode, /tun/)) {
-        push(inbounds, { type: 'tun', tag: 'tun-in', interface_name: u.get(U_CONFIG, S_INFRA, 'tun_name') || 'singtun0', address: [ u.get(U_CONFIG, S_INFRA, 'tun_addr4') || '172.19.0.1/30' ], mtu: strToInt(u.get(U_CONFIG, S_INFRA, 'tun_mtu') || '9000'), auto_route: false, udp_timeout: strToTime(udp_timeout) });
+        push(inbounds, { type: 'tun', tag: 'tun-in', interface_name: u.get(U_CONFIG, S_INFRA, 'tun_name') || 'singtun0', address: [ u.get(U_CONFIG, S_INFRA, 'tun_addr4') || '172.19.0.1/30' ], mtu: strToInt(u.get(U_CONFIG, S_INFRA, 'tun_mtu') || '9000'), auto_route: true, udp_timeout: strToTime(udp_timeout) });
     }
 
     u.foreach(U_CONFIG, 'server', (cfg) => {
@@ -223,7 +223,7 @@ function build_policies(u, valid_outbounds) {
         if (cfg.enabled !== '1') return;
         let out_target = (cfg.outbound === 'direct-out' || cfg.outbound === 'block-out') ? cfg.outbound : sprintf("cfg-%s-out", cfg.outbound);
         if (out_target !== 'direct-out' && out_target !== 'block-out' && !valid_outbounds[out_target]) out_target = 'direct-out';
-        push(dns.servers, { tag: cfg['.name'], type: cfg.type || 'udp', server: cfg.server, detour: out_target });
+        push(dns.servers, { tag: sprintf("cfg-%s-dns", cfg['.name']), type: cfg.type || 'udp', server: cfg.server, detour: out_target });
     });
 
     // [Category B] 职能：解析并提取 DNS 路由规则，映射至 Sing-box 动作模型
@@ -331,11 +331,15 @@ function build_policies(u, valid_outbounds) {
          }
          route.final = final_out;
     }
-    dns.final = u.get(U_CONFIG, 'dns', 'default_server');
+    // 🚨 架构修复 2：给兜底 DNS 引用补上命名前缀
+    let def_dns = u.get(U_CONFIG, 'dns', 'default_server');
+    if (def_dns) {
+        dns.final = sprintf("cfg-%s-dns", def_dns);
+    }
 
     let default_outbound_dns = u.get(U_CONFIG, 'routing', 'default_outbound_dns');
     if (default_outbound_dns) {
-        route.default_domain_resolver = { server: default_outbound_dns };
+        route.default_domain_resolver = { server: sprintf("cfg-%s-dns", default_outbound_dns) };
     }
 
     return { route, dns, default_out };
@@ -432,6 +436,7 @@ function build_flow_model(trace_id) {
             dns: pd.dns
         };
 
+        // 🚨 架构修复 3：修复 NTP 模块里的 DNS 幽灵引用
         let ntp_server = u.get(U_CONFIG, S_INFRA, 'ntp_server');
         if (ntp_server) {
             let default_dns = u.get(U_CONFIG, 'routing', 'default_outbound_dns');
@@ -439,7 +444,7 @@ function build_flow_model(trace_id) {
                 enabled: true,
                 server: ntp_server,
                 detour: "direct-out",
-                domain_resolver: default_dns ? default_dns : "default-dns"
+                domain_resolver: default_dns ? sprintf("cfg-%s-dns", default_dns) : null
             };
         }
 
