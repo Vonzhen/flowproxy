@@ -47,6 +47,15 @@ define Package/luci-app-flowproxy/install
 	
 	$(INSTALL_DIR) $(1)/usr/share/flowproxy
 	$(CP) ./usr/share/flowproxy/* $(1)/usr/share/flowproxy/
+
+    # 🚨 架构修复：强行浇筑所有运行时需要的基础设施空目录（无视 Git 是否提交）
+    $(INSTALL_DIR) $(1)/etc/flowproxy
+	$(INSTALL_DIR) $(1)/etc/flowproxy/resources
+	$(INSTALL_DIR) $(1)/etc/flowproxy/ruleset
+	$(INSTALL_DIR) $(1)/etc/flowproxy/run
+	
+	# 容错拷贝：如果源码中确实存放了 china_ip.txt 等实体文件，则拷贝；如果没有，也不报错
+	[ -d ./etc/flowproxy ] && $(CP) ./etc/flowproxy/* $(1)/etc/flowproxy/ 2>/dev/null || true
 	
 	# [Category B] 修复点 A & B - 映射 Ubus 守护进程依赖的原生 Ucode 插件目录与 ACL 规则
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/ucode
