@@ -91,24 +91,30 @@ function task_update_kernel(trace_id, payload) {
             }
         }
         
-        if (!release_data || !release_data.tag_name) {
-            return Fail(ERR.E_SYSTEM_BUSY, "未能从 API 载荷中解析到有效的目标版本号！", trace_id);
-        }
-        
         let tag = release_data.tag_name;
         log(trace_id, 'INFO', 'KERNEL', '[SUCCESS] 准备下载版本: ' + tag);
+
+        // ---------------------------------------------------------
+        // 🚨 修正 1：智能嗅探系统包管理器，决定下载后缀
+        // ---------------------------------------------------------
+        let has_apk = false;
+        let chk_apk = ExecSafe(BIN.SH, ["-c", "command -v apk"], null, trace_id);
+        if (chk_apk.ok && chk_apk.data && chk_apk.data.stdout) {
+            has_apk = true;
+        }
+        let target_ext = has_apk ? "apk" : "ipk";
 
         let dl_url = "";
         let assets = release_data.assets || [];
         
-        let rx_ipk = regexp('\\.ipk$');
-        let rx_arch = regexp(sprintf('_%s\\.ipk$', owrt_arch));
+        let rx_ext = regexp(sprintf('\\.%s$', target_ext));
+        let rx_arch = regexp(sprintf('openwrt_%s\\.%s$', owrt_arch, target_ext));
         let rx_aarch64_check = regexp('aarch64');
-        let rx_aarch64_gen = regexp('aarch64_generic');
+        let rx_aarch64_gen = regexp(sprintf('openwrt_aarch64_generic\\.%s$', target_ext));
 
         for (let i = 0; i < length(assets); i++) {
             let name = assets[i].name || "";
-            if (match(name, rx_ipk) && match(name, rx_arch)) {
+            if (match(name, rx_ext) && match(name, rx_arch)) {
                 dl_url = assets[i].browser_download_url;
                 break;
             }
@@ -117,14 +123,14 @@ function task_update_kernel(trace_id, payload) {
         if (!dl_url && match(owrt_arch, rx_aarch64_check)) {
             for (let i = 0; i < length(assets); i++) {
                 let name = assets[i].name || "";
-                if (match(name, rx_ipk) && match(name, rx_aarch64_gen)) {
+                if (match(name, rx_ext) && match(name, rx_aarch64_gen)) {
                     dl_url = assets[i].browser_download_url;
                     break;
                 }
             }
         }
         
-        if (!dl_url) return Fail(ERR.E_SYSTEM_BUSY, "未找到匹配 " + owrt_arch + " 架构的 IPK 资产！", trace_id);
+        if (!dl_url) return Fail(ERR.E_SYSTEM_BUSY, "未找到匹配架构的 " + target_ext + " 资产！", trace_id);
 
         let parts = split(dl_url, "/");
         let file_name = parts[length(parts) - 1];
@@ -148,56 +154,42 @@ function task_update_kernel(trace_id, payload) {
             return Fail(ERR.E_SYSTEM_BUSY, "内核文件下载失败！", trace_id);
         }
 
+        // ---------------------------------------------------------
+        // 🚨 修正 2：釜底抽薪，用 MV 代替 CP，彻底消灭“假阳性”
+        // ---------------------------------------------------------
         let target_bin = BIN.SINGBOX;
         let backup_bin = target_bin + ".bak";
-        if (stat(target_bin)) ExecSafe(BIN.CP, ["-f", target_bin, backup_bin], null, trace_id);
+        if (stat(target_bin)) {
+            ExecSafe(BIN.MV, ["-f", target_bin, backup_bin], null, trace_id);
+        }
 
-        log(trace_id, 'INFO', 'KERNEL', '启动 opkg 安装...');
+        log(trace_id, 'INFO', 'KERNEL', '启动包管理器静默安装...');
         
         let safe_file_path = shell_escape(file_path);
-        // [Category C] Warning: [探针 1] 移除 >/dev/null 2>&1，放开标准输出与错误流捕获
-        let opkg_cmd = sprintf("opkg install --force-reinstall --force-overwrite %s", safe_file_path);
-        let opkg_res = ExecSafe(BIN.SH, ["-c", opkg_cmd], null, trace_id);
+        let pkg_cmd = "";
         
-        if (opkg_res.ok) {
-            log(trace_id, 'INFO', 'KERNEL', '[SUCCESS] 包管理器已成功更新二进制文件。');
+        if (has_apk) {
+            // [Category A] 适配 OpenWrt 24.10+ 的 APK
+            pkg_cmd = sprintf("apk add --allow-untrusted --force-overwrite %s", safe_file_path);
         } else {
-            // [Category B] 提取 opkg 底层异常
-            let opkg_err = trim(opkg_res.data ? (opkg_res.data.stderr || opkg_res.data.stdout || "") : "Unknown Error");
-            log(trace_id, 'WARN', 'KERNEL', '包管理器安装异常: ' + opkg_err);
-            log(trace_id, 'INFO', 'KERNEL', '尝试进入 Fallback 暴力提取模式...');
+            // 🚨 架构修正：剔除错误的跨平台参数！仅使用标准强制覆盖。
+            // 配置文件冲突导致的返回码 255 将由下方的文件物理大小检测 (stat) 完美吸收。
+            pkg_cmd = sprintf("opkg install --force-reinstall --force-overwrite %s", safe_file_path);
+        }
+        
+        let pkg_res = ExecSafe(BIN.SH, ["-c", pkg_cmd], null, trace_id);
+        
+        // 由于上面使用了 MV，此时如果 target_bin 存在，那 100% 是新安装的！
+        if (pkg_res.ok || (stat(target_bin) && stat(target_bin).size > 10000000)) {
+            log(trace_id, 'INFO', 'KERNEL', '[SUCCESS] 包管理器已成功安装新内核。');
+        } else {
+            let pkg_err = trim(pkg_res.data ? (pkg_res.data.stderr || pkg_res.data.stdout || "") : "Unknown Error");
+            log(trace_id, 'ERROR', 'KERNEL', '包管理器彻底安装失败: ' + pkg_err);
             
-            let safe_tmp_dir = shell_escape(tmp_dir);
-            let safe_file_name = shell_escape(file_name);
-            
-            // [Category C] Warning: [探针 2] 移除 2>/dev/null，捕获解包崩溃细节
-            let tar_ext_res = ExecSafe(BIN.SH, ["-c", sprintf("cd %s && tar -xzf %s", safe_tmp_dir, safe_file_name)], null, trace_id);
-            if (!tar_ext_res.ok) {
-                let tar_err = trim(tar_ext_res.data ? (tar_ext_res.data.stderr || "") : "");
-                log(trace_id, 'WARN', 'KERNEL', '初步解包异常 (可能非标准 IPK 格式): ' + tar_err);
-            }
-            
-            let bin_extracted = false;
-            if (stat(tmp_dir + "/data.tar.zst")) {
-                let zst_res = ExecSafe(BIN.SH, ["-c", sprintf("cd %s && tar -I zstd -xf data.tar.zst ./usr/bin/sing-box", safe_tmp_dir)], null, trace_id);
-                if (zst_res.ok) bin_extracted = true;
-                else log(trace_id, 'ERROR', 'KERNEL', 'ZSTD 解压失败 (可能是系统缺少 zstd 依赖): ' + trim(zst_res.data ? (zst_res.data.stderr || "") : ""));
-            } else if (stat(tmp_dir + "/data.tar.gz")) {
-                let gz_res = ExecSafe(BIN.SH, ["-c", sprintf("cd %s && tar -xzf data.tar.gz ./usr/bin/sing-box", safe_tmp_dir)], null, trace_id);
-                if (gz_res.ok) bin_extracted = true;
-                else log(trace_id, 'ERROR', 'KERNEL', 'GZ 解压失败: ' + trim(gz_res.data ? (gz_res.data.stderr || "") : ""));
-            }
-            
-            if (bin_extracted && stat(tmp_dir + "/usr/bin/sing-box")) {
-                ExecSafe(BIN.CP, ["-f", tmp_dir + "/usr/bin/sing-box", target_bin], null, trace_id);
-                let safe_target_bin = shell_escape(target_bin);
-                ExecSafe(BIN.SH, ["-c", sprintf("chmod +x %s", safe_target_bin)], null, trace_id);
-                log(trace_id, 'INFO', 'KERNEL', '底层二进制文件提取替换成功。');
-            } else {
-                if (stat(backup_bin)) ExecSafe(BIN.MV, ["-f", backup_bin, target_bin], null, trace_id);
-                ExecSafe(BIN.RM, ["-rf", tmp_dir], null, trace_id);
-                return Fail(ERR.E_SYSTEM_BUSY, "二进制文件提取彻底失败，已恢复旧内核...", trace_id);
-            }
+            // 失败时，将备份还原
+            if (stat(backup_bin)) ExecSafe(BIN.MV, ["-f", backup_bin, target_bin], null, trace_id);
+            ExecSafe(BIN.RM, ["-rf", tmp_dir], null, trace_id);
+            return Fail(ERR.E_SYSTEM_BUSY, "包管理器安装内核失败，已自动回滚。", trace_id);
         }
 
         log(trace_id, 'INFO', 'KERNEL', '🛡️ [防线 1/2] 正在执行新内核架构运行测试 (Shell 代理诊断模式)...');

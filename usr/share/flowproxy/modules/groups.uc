@@ -101,6 +101,10 @@ function task_rebuild_groups(trace_id) {
                 uci.set(UCICONFIG, group_id, 'node', 'urltest');
                 uci.set(UCICONFIG, group_id, 'auto_generated', '1');
                 uci.set(UCICONFIG, group_id, 'urltest_nodes', n_list);
+                uci.set(UCICONFIG, group_id, 'urltest_url', 'https://www.gstatic.com/generate_204');
+                uci.set(UCICONFIG, group_id, 'urltest_interval', '600');
+                uci.set(UCICONFIG, group_id, 'urltest_tolerance', '150');
+                uci.set(UCICONFIG, group_id, 'urltest_interrupt_exist_connections', '1');
 
                 let allowed = false;
                 for (let k = 0; k < length(ap.whitelist); k++) {
@@ -126,6 +130,10 @@ function task_rebuild_groups(trace_id) {
             uci.set(UCICONFIG, top_id, 'node', 'urltest');
             uci.set(UCICONFIG, top_id, 'auto_generated', '1');
             uci.set(UCICONFIG, top_id, 'urltest_nodes', top_level_nodes[reg]);
+            uci.set(UCICONFIG, top_id, 'urltest_url', 'https://www.gstatic.com/generate_204');
+            uci.set(UCICONFIG, top_id, 'urltest_interval', '600');
+            uci.set(UCICONFIG, top_id, 'urltest_tolerance', '150');
+            uci.set(UCICONFIG, top_id, 'urltest_interrupt_exist_connections', '1');
         }
 
         if (fallback_node) {

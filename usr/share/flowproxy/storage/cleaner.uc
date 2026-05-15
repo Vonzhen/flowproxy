@@ -40,37 +40,48 @@ function _build_reference_graph(u) {
 }
 
 /**
- * 模块对外导出的主接口：回收过期日志
+ * 模块对外导出的主接口：回收过期日志与任务记录
  */
 function rotate_logs(trace_id, max_keep) {
     try {
         if (!max_keep) max_keep = 50;
-        let files = [];
+        let deleted_count = 0;
         
-        let dir_entries = opendir(PATH.JOB);
-        if (!dir_entries) return Success({ deleted: 0 }, 200, trace_id); // ⭐ 协议对齐
+        // 🚨 架构拓展：同时清理任务目录与纯文本日志目录
+        let target_dirs = [PATH.JOB];
+        if (PATH.LOG) push(target_dirs, PATH.LOG);
 
-        for (let entry = dir_entries.read(); entry != null; entry = dir_entries.read()) {
-            if (entry.name !== '.' && entry.name !== '..') {
-                let path = sprintf("%s/%s", PATH.JOB, entry.name);
-                let st = stat(path);
-                if (st && st.type === 'file') {
-                    push(files, { path: path, mtime: st.mtime });
+        for (let d = 0; d < length(target_dirs); d++) {
+            let current_dir = target_dirs[d];
+            let files = [];
+            let dir_entries = opendir(current_dir);
+            
+            if (!dir_entries) continue;
+
+            for (let entry = dir_entries.read(); entry != null; entry = dir_entries.read()) {
+                if (entry.name !== '.' && entry.name !== '..') {
+                    let path = sprintf("%s/%s", current_dir, entry.name);
+                    let st = stat(path);
+                    if (st && st.type === 'file') {
+                        push(files, { path: path, mtime: st.mtime });
+                    }
+                }
+            }
+            dir_entries.close();
+
+            files.sort((a, b) => b.mtime - a.mtime);
+
+            if (length(files) > max_keep) {
+                let targets = slice(files, max_keep);
+                for (let i = 0; i < length(targets); i++) {
+                    unlink(targets[i].path);
+                    deleted_count++;
                 }
             }
         }
-        dir_entries.close();
 
-        files.sort((a, b) => b.mtime - a.mtime);
-
-        let deleted_count = 0;
-        if (length(files) > max_keep) {
-            let targets = slice(files, max_keep);
-            for (let i = 0; i < length(targets); i++) {
-                unlink(targets[i].path);
-                deleted_count++;
-            }
-            log(trace_id, 'INFO', 'CLEANER', sprintf('Log rotation completed. Removed %d stale logs.', deleted_count));
+        if (deleted_count > 0) {
+            log(trace_id, 'INFO', 'CLEANER', sprintf('Log rotation completed. Removed %d stale files across directories.', deleted_count));
         }
 
         return Success({ deleted: deleted_count }, 200, trace_id);
