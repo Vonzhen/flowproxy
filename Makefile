@@ -72,16 +72,36 @@ endef
 define Package/luci-app-flowproxy/postinst
 #!/bin/sh
 if [ -z "$${IPKG_INSTROOT}" ]; then
-	chmod 0755 /etc/init.d/flowproxy
-	chmod 0755 /usr/share/flowproxy/runtime/worker.uc
+    chmod 0755 /etc/init.d/flowproxy
+    chmod 0755 /usr/share/flowproxy/runtime/worker.uc
+    
+    /etc/init.d/flowproxy enable
+    # [Category C] Note: 解决生命周期延迟，确保环境即刻可用
+    [ -f "/etc/uci-defaults/99_flowproxy" ] && sh "/etc/uci-defaults/99_flowproxy"
+    
+    # 历史软链清理与热重载通知
+    rm -f /usr/libexec/rpcd/flowproxy
+    
+    # 🚨 架构级修复：在此处动态注入 Ucode 寻址软链！
+    # 解决 Ucode 引擎底层强制去 /usr/share/ucode 寻址导致找不到 constants.uc 的崩溃问题
+    mkdir -p /usr/share/ucode
+    ln -sfn /usr/share/flowproxy /usr/share/ucode/flowproxy
+    
+    killall -HUP rpcd 2>/dev/null
+fi
+exit 0
+endef
+
+# [Category B] 卸载前置干预：安全剥离资源与物理软链
+define Package/luci-app-flowproxy/prerm
+#!/bin/sh
+if [ -z "$${IPKG_INSTROOT}" ]; then
+	# 停止服务并取消开机自启
+	/etc/init.d/flowproxy stop 2>/dev/null
+	/etc/init.d/flowproxy disable 2>/dev/null
 	
-	/etc/init.d/flowproxy enable
-	# [Category C] Note: 解决生命周期延迟，确保环境即刻可用
-	[ -f "/etc/uci-defaults/99_flowproxy" ] && sh "/etc/uci-defaults/99_flowproxy"
-	
-	# 历史软链清理与热重载通知
-	rm -f /usr/libexec/rpcd/flowproxy
-	killall -HUP rpcd 2>/dev/null
+	# 🚨 安全卸载：销毁我们在 postinst 中创建的 Ucode 引擎寻址软链
+	rm -f /usr/share/ucode/flowproxy
 fi
 exit 0
 endef

@@ -108,6 +108,11 @@ if [ -z "${IPKG_INSTROOT}" ]; then
     # [Category C] Note: 历史遗留软链的容错性清理
     rm -f /usr/libexec/rpcd/flowproxy
     
+    # 🚨 架构级修复：动态注入 Ucode 引擎寻址软链！
+    # 将实际业务代码桥接到引擎默认搜索路径，彻底消灭 module not found 报错
+    mkdir -p /usr/share/ucode 2>/dev/null
+    ln -sfn /usr/share/flowproxy /usr/share/ucode/flowproxy
+    
     # 清除内存侧残留缓存并通知守护进程热重载
     rm -f /tmp/luci-indexcache
     rm -rf /tmp/luci-modulecache/
@@ -123,6 +128,9 @@ cat <<'EOF' > "$IPKG_DIR/CONTROL/prerm"
 if [ -z "${IPKG_INSTROOT}" ]; then
     /etc/init.d/flowproxy stop 2>/dev/null
     /etc/init.d/flowproxy disable 2>/dev/null
+    
+    # 🚨 安全卸载：销毁我们在 postinst 中创建的引擎寻址软链
+    rm -f /usr/share/ucode/flowproxy
 fi
 exit 0
 EOF
