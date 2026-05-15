@@ -74,7 +74,7 @@ return view.extend({
             /* 🌟 核心防御：如果配置里没有 assets 节点，直接内存注册，防止页面空白 */
             if (!uci.get('flowproxy', 'assets')) {
                 // ⭐ 统一类型和名字均为 assets，绝不与 config 节抢名字
-                uci.set('flowproxy', 'assets', 'assets'); 
+                uci.add('flowproxy', 'assets', 'assets');
             }
             return responses;
         });
@@ -1701,6 +1701,83 @@ return view.extend({
         /* Direct domain list end */
         /* ACL settings end */
 
+        /* ========================================================= */
+        /* Infra 架构设置区块 - 开始 */
+        /* ========================================================= */
+        s.tab('infra', _('底层架构 (Infra)'));
+        
+        // 绑定到 UCI 中的 config infra 'infra' 节
+        o = s.taboption('infra', form.SectionValue, '_infra', form.NamedSection, 'infra', 'infra');
+        ss = o.subsection;
+
+        /* -- API 控制器设置 -- */
+        so = ss.option(form.DummyValue, '_header_api', '');
+        so.rawhtml = true;
+        so.default = '<div style="padding: 8px 15px; margin-top: 10px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #17a2b8; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">🔌 面板 API 控制器</div>';
+
+        so = ss.option(form.Value, 'clash_api_port', _('API 监听端口'), _('Zashboard 面板与核心通信的 RESTful API 端口。默认 9090。<br/><b>注意：</b>若在此处修改，需同步在 Zashboard 面板的设置中更改连接端口。'));
+        so.datatype = 'port';
+        so.placeholder = '9090';
+        so.rmempty = false;
+
+        so = ss.option(form.Value, 'clash_api_host', _('API 监听地址'), _('默认 0.0.0.0 允许局域网内所有设备访问面板 API。'));
+        so.datatype = 'ipaddr';
+        so.placeholder = '0.0.0.0';
+        so.rmempty = false;
+
+        /* -- 时间同步设置 -- */
+        so = ss.option(form.DummyValue, '_header_ntp', '');
+        so.rawhtml = true;
+        so.default = '<div style="padding: 8px 15px; margin-top: 30px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #ffc107; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">⏱️ 时钟同步设置</div>';
+
+        so = ss.option(form.Value, 'ntp_server', _('NTP 服务器'), _('独立的时间同步服务器地址。配置后，Sing-box 内核将接管自身的时间同步，防止因设备时间不准导致 TLS 握手失败。'));
+        so.datatype = 'or(hostname, ipaddr)';
+        so.placeholder = 'time.apple.com';
+
+        /* -- 核心入站端口设置 -- */
+        so = ss.option(form.DummyValue, '_header_ports', '');
+        so.rawhtml = true;
+        so.default = '<div style="padding: 8px 15px; margin-top: 30px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #6c757d; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">⚙️ 底层入站端口 (Inbounds)</div>';
+
+        so = ss.option(form.Value, 'mixed_port', _('Mixed 混合端口'), _('HTTP/Socks5 混合代理入站端口。'));
+        so.datatype = 'port';
+        so.placeholder = '5330';
+        
+        so = ss.option(form.Value, 'redirect_port', _('Redirect 端口'), _('TCP 透明代理重定向入站端口。'));
+        so.datatype = 'port';
+        so.placeholder = '5331';
+
+        so = ss.option(form.Value, 'tproxy_port', _('TProxy 端口'), _('UDP 透明代理入站端口。'));
+        so.datatype = 'port';
+        so.placeholder = '5332';
+
+        so = ss.option(form.Value, 'dns_port', _('DNS 劫持端口'), _('DNS 流量劫持入站端口。'));
+        so.datatype = 'port';
+        so.placeholder = '5333';
+
+        /* -- TUN 网卡设置 -- */
+        so = ss.option(form.DummyValue, '_header_tun', '');
+        so.rawhtml = true;
+        so.default = '<div style="padding: 8px 15px; margin-top: 30px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #28a745; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">🖧 TUN 虚拟网卡设置</div>';
+
+        so = ss.option(form.Value, 'tun_name', _('TUN 网卡名称'));
+        so.placeholder = 'singtun0';
+
+        so = ss.option(form.Value, 'tun_addr4', _('IPv4 地址'), _('TUN 接口的虚拟 IPv4 网段。'));
+        so.datatype = 'cidr4';
+        so.placeholder = '172.19.0.1/30';
+
+        so = ss.option(form.Value, 'tun_addr6', _('IPv6 地址'), _('TUN 接口的虚拟 IPv6 网段。'));
+        so.datatype = 'cidr6';
+        so.placeholder = 'fdfe:dcba:9876::1/126';
+
+        so = ss.option(form.Value, 'tun_mtu', _('TUN MTU'), _('最大传输单元。'));
+        so.datatype = 'uinteger';
+        so.placeholder = '9000';
+        /* ========================================================= */
+        /* Infra 架构设置区块 - 结束 */
+        /* ========================================================= */
+        
         /* ========================================================= */
         /* Zashboard 内嵌注入点 - 开始 (在 Access Control 之后) */
         /* ========================================================= */

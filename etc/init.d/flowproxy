@@ -21,6 +21,11 @@ prepare_env() {
     mkdir -p "$RUN_DIR"
     mkdir -p "$LOG_DIR"
     mkdir -p "$JOB_DIR"
+    mkdir -p "$RUN_DIR/resources"  # 🚨 补充：面板规则集等资源文件的易失性挂载点
+    
+    # 强制覆盖权限，防止首次安装时因 umask 导致 procd 无法读写
+    chmod -R 0755 "$RUN_DIR"
+    chown -R root:root "$RUN_DIR" 2>/dev/null
 
     # [Category C] Note: 定时任务属于系统级配置，目前由 init.d 阶段统一下发
     update_cron
@@ -96,8 +101,8 @@ stop_service() {
     logger -t flowproxy "[STOP] Initiating service teardown..."
 
     # 1. 阻塞调用网络卸载网关
-    # [Category C] Warning: teardown() 必须保证绝对幂等，不能因为文件或规则不存在而抛出异常
-    ucode -e "import { teardown } from 'flowproxy.system.network'; teardown('init');"
+    # [Category C] Warning: 附加 || true，确保 ucode 引擎异常崩溃时，不会阻断后续的物理清理与定时任务回收
+    ucode -e "import { teardown } from 'flowproxy.system.network'; teardown('init');" || true
 
     # 2. 物理清除运行时产物 (双重保险)
     rm -f "$CONF_FILE"
