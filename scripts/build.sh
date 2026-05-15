@@ -69,6 +69,17 @@ fi
 # 4. 生成控制层元数据 (Control Plane Metadata)
 echo "[INFO] Generating CONTROL files..."
 
+# [Category B] 注入 preinst 脚本：解决非托管静态资源的覆写冲突
+cat <<'EOF' > "$IPKG_DIR/CONTROL/preinst"
+#!/bin/sh
+if [ -z "${IPKG_INSTROOT}" ]; then
+    # 强制抹除旧的物理遗留面板，为 opkg 解压铺平道路
+    rm -rf /www/zashboard 2>/dev/null
+fi
+exit 0
+EOF
+chmod 0755 "$IPKG_DIR/CONTROL/preinst"
+
 cat <<EOF > "$IPKG_DIR/CONTROL/control"
 Package: $PKG_NAME
 Version: $PKG_VERSION-$PKG_RELEASE

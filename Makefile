@@ -22,6 +22,15 @@ define Package/luci-app-flowproxy
   DEPENDS:=+ucode +ucode-mod-uci +ucode-mod-fs +ucode-mod-math +curl +ca-bundle +kmod-tun
 endef
 
+# [Category B] 前置安装干预：摧毁遗留物理资产，防止 opkg 覆写阻断
+define Package/luci-app-flowproxy/preinst
+#!/bin/sh
+if [ -z "$${IPKG_INSTROOT}" ]; then
+    rm -rf /www/zashboard 2>/dev/null
+fi
+exit 0
+endef
+
 define Package/luci-app-flowproxy/conffiles
 /etc/config/flowproxy
 endef
