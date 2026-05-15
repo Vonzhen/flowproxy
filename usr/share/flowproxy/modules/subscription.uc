@@ -86,6 +86,9 @@ function _urldecode(str) {
     });
 }
 
+// ============================================================================
+// 🚀 重构版：完美复刻 HomeProxy 容错解析引擎 (无 Regex 崩溃风险)
+// ============================================================================
 function _parse_url(url_string) {
     let res = { protocol: "", username: "", password: "", hostname: "", port: "", searchParams: {}, hash: "" };
     let idx = index(url_string, "://");
@@ -93,12 +96,14 @@ function _parse_url(url_string) {
     res.protocol = substr(url_string, 0, idx);
     let payload = substr(url_string, idx + 3);
     
+    // 1. 提取并解码 Hash (标签)
     let hash_idx = index(payload, "#");
     if (hash_idx >= 0) {
-        res.hash = substr(payload, hash_idx + 1);
+        res.hash = _urldecode(substr(payload, hash_idx + 1));
         payload = substr(payload, 0, hash_idx);
     }
     
+    // 2. 提取并解码 Query Params
     let qs_idx = index(payload, "?");
     if (qs_idx >= 0) {
         let qs = substr(payload, qs_idx + 1);
@@ -106,10 +111,16 @@ function _parse_url(url_string) {
         let pairs = split(qs, "&");
         for (let i = 0; i < length(pairs); i++) {
             let kv = split(pairs[i], "=");
-            if (length(kv) == 2) res.searchParams[kv[0]] = kv[1];
+            if (length(kv) == 2) res.searchParams[_urldecode(kv[0])] = _urldecode(kv[1]);
         }
     }
     
+    // 3. 剥离尾部垃圾斜杠 (拯救 anytls)
+    if (substr(payload, length(payload) - 1, 1) === "/") {
+        payload = substr(payload, 0, length(payload) - 1);
+    }
+    
+    // 4. 提取并解码 Auth (用户名/密码/UUID)
     let auth_idx = index(payload, "@");
     let host_port = payload;
     if (auth_idx >= 0) {
@@ -117,21 +128,34 @@ function _parse_url(url_string) {
         host_port = substr(payload, auth_idx + 1);
         let up_idx = index(auth, ":");
         if (up_idx >= 0) {
-            res.username = substr(auth, 0, up_idx);
-            res.password = substr(auth, up_idx + 1);
+            res.username = _urldecode(substr(auth, 0, up_idx));
+            res.password = _urldecode(substr(auth, up_idx + 1));
         } else {
-            res.username = auth;
+            res.username = _urldecode(auth);
         }
     }
     
-    let m = match(host_port, regexp('^(\\[.*?\\]|[^:]+):([0-9]+)$'));
-    if (m) {
-        res.hostname = m[1];
-        res.port = m[2];
+    // 5. 纯字符串提取 Host 和 Port (彻底抛弃危险正则，完美兼容 IPv6)
+    if (substr(host_port, 0, 1) === "[") {
+        let close_idx = index(host_port, "]");
+        if (close_idx > 0) {
+            res.hostname = substr(host_port, 1, close_idx - 1);
+            let remainder = substr(host_port, close_idx + 1);
+            if (substr(remainder, 0, 1) === ":") res.port = substr(remainder, 1);
+        }
     } else {
-        res.hostname = host_port;
-        res.port = "80"; 
+        let colon_idx = index(host_port, ":");
+        if (colon_idx >= 0) {
+            res.hostname = substr(host_port, 0, colon_idx);
+            res.port = substr(host_port, colon_idx + 1);
+        } else {
+            res.hostname = host_port;
+        }
     }
+    
+    if (!res.port) res.port = "80"; 
+    // 清理端口中可能残留的垃圾字符
+    res.port = replace(res.port, regexp('[^0-9]', 'g'), '');
     return res;
 }
 
@@ -145,9 +169,10 @@ function _parse_node_uri(uri, global_opts) {
     let params = url ? url.searchParams : {};
     let config = null;
 
-    let default_label = (url && url.hash) ? _urldecode(url.hash) : "";
+    let default_label = (url && url.hash) ? url.hash : "";
     let scheme_upper = uc(scheme); 
 
+    // 完美复刻 HomeProxy 的 insecure 识别逻辑
     let p_insec = params.allowInsecure || params.insecure || "";
     let is_insec = (p_insec === '1' || p_insec === 'true') ? '1' : '0';
 
@@ -159,14 +184,26 @@ function _parse_node_uri(uri, global_opts) {
             config = { 
                 label: default_label, type: 'vless', address: url.hostname, port: url.port, uuid: url.username, 
                 tls: (params.security === 'tls' || params.security === 'xtls' || params.security === 'reality') ? '1' : '0', 
-                tls_sni: params.sni || "", tls_utls: params.fp ? _urldecode(params.fp) : "",
+                tls_sni: params.sni || "", tls_utls: params.fp || "",
                 tls_reality: (params.security === 'reality') ? '1' : '0', 
-                tls_reality_public_key: params.pbk ? _urldecode(params.pbk) : "", tls_reality_short_id: params.sid || "", 
+                tls_reality_public_key: params.pbk || "", tls_reality_short_id: params.sid || "", 
                 vless_flow: (params.security === 'tls' || params.security === 'reality') ? (params.flow || "") : "", 
                 transport: (params.type && params.type !== 'tcp') ? params.type : "", 
-                tls_alpn: params.alpn ? _urldecode(params.alpn) : "", tls_insecure: is_insec 
+                tls_alpn: params.alpn || "", tls_insecure: is_insec 
             };
-            if (params.type === 'ws') { config.ws_host = params.host ? _urldecode(params.host) : ""; config.ws_path = params.path ? _urldecode(params.path) : ""; } else if (params.type === 'grpc') { config.grpc_servicename = params.serviceName || ""; }
+            if (params.type === 'ws') { 
+                config.ws_host = params.host || ""; 
+                config.ws_path = params.path || ""; 
+                // 🌟 复刻 HomeProxy 的 Websocket Early Data (ed) 提取逻辑
+                let ed_idx = index(config.ws_path, "?ed=");
+                if (ed_idx >= 0) {
+                    config.websocket_early_data_header = 'Sec-WebSocket-Protocol';
+                    config.websocket_early_data = substr(config.ws_path, ed_idx + 4);
+                    config.ws_path = substr(config.ws_path, 0, ed_idx);
+                }
+            } else if (params.type === 'grpc') { 
+                config.grpc_servicename = params.serviceName || ""; 
+            }
             break;
         case 'vmess':
             try { v_json = json(_decode_base64_str(parts[1])); } catch(e) {}
@@ -176,7 +213,18 @@ function _parse_node_uri(uri, global_opts) {
                     vmess_alterid: v_json.aid + "", vmess_encrypt: v_json.scy || 'auto', transport: (v_json.net !== 'tcp') ? (v_json.net || "") : "", 
                     tls: (v_json.tls === 'tls') ? '1' : '0', tls_sni: v_json.sni || v_json.host || "", tls_utls: v_json.fp || ""
                 }; 
-                if (v_json.net === 'ws') { config.ws_host = v_json.host || ""; config.ws_path = v_json.path || ""; } else if (v_json.net === 'grpc') { config.grpc_servicename = v_json.path || ""; } 
+                if (v_json.net === 'ws') { 
+                    config.ws_host = v_json.host || ""; 
+                    config.ws_path = v_json.path || ""; 
+                    let ed_idx = index(config.ws_path, "?ed=");
+                    if (ed_idx >= 0) {
+                        config.websocket_early_data_header = 'Sec-WebSocket-Protocol';
+                        config.websocket_early_data = substr(config.ws_path, ed_idx + 4);
+                        config.ws_path = substr(config.ws_path, 0, ed_idx);
+                    }
+                } else if (v_json.net === 'grpc') { 
+                    config.grpc_servicename = v_json.path || ""; 
+                } 
             }
             break;
         case 'ss':
@@ -186,29 +234,37 @@ function _parse_node_uri(uri, global_opts) {
             break;
         case 'trojan':
             config = { 
-                label: default_label, type: 'trojan', address: url.hostname, port: url.port, password: _urldecode(url.username), 
+                label: default_label, type: 'trojan', address: url.hostname, port: url.port, password: url.username, 
                 transport: (params.type && params.type !== 'tcp') ? params.type : "", 
-                tls: '1', tls_sni: params.sni || "", tls_utls: params.fp ? _urldecode(params.fp) : "", tls_insecure: is_insec 
+                tls: '1', tls_sni: params.sni || "", tls_utls: params.fp || "", tls_insecure: is_insec 
             };
-            if (params.type === 'ws') { config.ws_host = params.host ? _urldecode(params.host) : ""; config.ws_path = params.path ? _urldecode(params.path) : ""; } else if (params.type === 'grpc') { config.grpc_servicename = params.serviceName || ""; }
+            if (params.type === 'ws') { 
+                config.ws_host = params.host || ""; 
+                config.ws_path = params.path || ""; 
+                let ed_idx = index(config.ws_path, "?ed=");
+                if (ed_idx >= 0) {
+                    config.websocket_early_data_header = 'Sec-WebSocket-Protocol';
+                    config.websocket_early_data = substr(config.ws_path, ed_idx + 4);
+                    config.ws_path = substr(config.ws_path, 0, ed_idx);
+                }
+            } else if (params.type === 'grpc') { config.grpc_servicename = params.serviceName || ""; }
             break;
         case 'tuic':
-            config = { label: default_label, type: 'tuic', address: url.hostname, port: url.port, uuid: url.username, password: url.password ? _urldecode(url.password) : "", tls: '1', tls_sni: params.sni || "", tuic_congestion_control: params.congestion_control || "", tuic_udp_relay_mode: params.udp_relay_mode || "", tls_alpn: params.alpn ? _urldecode(params.alpn) : "" };
+            config = { label: default_label, type: 'tuic', address: url.hostname, port: url.port, uuid: url.username, password: url.password || "", tls: '1', tls_sni: params.sni || "", tuic_congestion_control: params.congestion_control || "", tuic_udp_relay_mode: params.udp_relay_mode || "", tls_alpn: params.alpn || "" };
             break;
         case 'anytls':
-            config = { label: default_label, type: 'anytls', address: url.hostname, port: url.port, password: _urldecode(url.username), tls: '1', tls_sni: params.sni || "", tls_insecure: is_insec };
+            config = { label: default_label, type: 'anytls', address: url.hostname, port: url.port, password: url.username, tls: '1', tls_sni: params.sni || "", tls_insecure: is_insec };
             break;
         case 'hysteria2':
         case 'hy2':
-            hy2_pass = url.username ? _urldecode(url.username) : ""; if (url.password) hy2_pass += ":" + _urldecode(url.password);
+            hy2_pass = url.username || ""; if (url.password) hy2_pass += ":" + url.password;
             config = { label: default_label, type: 'hysteria2', address: url.hostname, port: url.port, password: hy2_pass, hysteria_obfs_type: params.obfs || "", hysteria_obfs_password: params['obfs-password'] || "", tls: '1', tls_insecure: is_insec, tls_sni: params.sni || "" };
             break;
     }
 
     if (!config || !config.address || config.address === "") return null;
 
-    // [Category B] 职能：清理不可见控制字符
-    // [Category C] Note: 必须使用物理字节字面量 ("\r\n\t")。POSIX ERE 引擎不支持在 [] 内转义，原有的 [\\r\\n\\t] 会被错认为匹配普通字母 r, n, t。
+    // 清理不可见控制字符 (遵循 1.0 铁律，不碰正则陷阱)
     config.label = replace(config.label || "", regexp("[\r\n\t]", 'g'), " ");
     config.label = trim(config.label);
     
