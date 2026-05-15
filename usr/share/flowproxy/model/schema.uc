@@ -152,6 +152,17 @@ function build_outbounds(u) {
             let tol = strToInt(cfg.urltest_tolerance);
             out_group.tolerance = tol != null ? tol : 150;
 
+            // 🚨 架构修复：打通被遗漏的 URLTest 核心参数管线
+            // Sing-box 1.8+ 规范：时间间隔必须是带单位的 duration 字符串 (如 "600s")
+            let interval = strToInt(cfg.urltest_interval);
+            if (interval != null) out_group.interval = interval + "s";
+            
+            // 提取测试 URL
+            if (cfg.urltest_url) out_group.url = cfg.urltest_url;
+            
+            // 提取打断现有连接开关
+            if (cfg.urltest_interrupt_exist_connections === '1') out_group.interrupt_exist_connections = true;
+
             let raw_nodes = cfg.urltest_nodes || [];
             if (type(raw_nodes) === 'string') raw_nodes = [raw_nodes];
 
