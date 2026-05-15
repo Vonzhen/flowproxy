@@ -20,6 +20,15 @@ function strToBool(val) { return (val != null && val !== "") ? (val === '1' || v
 function strToTime(val) { return (val != null && val !== "") ? (val) : null; }
 function parse_port(val) { return strToInt(val); }
 
+// 🚨 架构修复：全局 UUID 补全器，专治机场残缺 32 位 UUID，满足网关严格质检
+function normalize_uuid(u) {
+    if (!u || type(u) !== 'string') return u;
+    if (length(u) === 32 && index(u, '-') < 0) {
+        return sprintf("%s-%s-%s-%s-%s", substr(u,0,8), substr(u,8,4), substr(u,12,4), substr(u,16,4), substr(u,20,12));
+    }
+    return u;
+}
+
 const U_CONFIG = 'flowproxy';
 const S_INFRA = 'infra';
 const S_MAIN = 'config';
@@ -90,17 +99,20 @@ function generate_endpoint(node, self_mark) {
             ep.disable_mtu_discovery = strToBool(node.hysteria_disable_mtu_discovery);
             break;
         case 'tuic':
-            ep.uuid = node.uuid; ep.password = node.password; ep.congestion_control = node.tuic_congestion_control;
+            // 🚨 修复：格式化 UUID
+            ep.uuid = normalize_uuid(node.uuid); ep.password = node.password; ep.congestion_control = node.tuic_congestion_control;
             ep.udp_relay_mode = node.tuic_udp_relay_mode; ep.udp_over_stream = strToBool(node.tuic_udp_over_stream);
             ep.zero_rtt_handshake = strToBool(node.tuic_enable_zero_rtt); ep.heartbeat = strToTime(node.tuic_heartbeat);
             break;
         case 'vmess':
-            ep.uuid = node.uuid; ep.alter_id = strToInt(node.vmess_alterid); ep.security = node.vmess_encrypt;
+            // 🚨 修复：格式化 UUID
+            ep.uuid = normalize_uuid(node.uuid); ep.alter_id = strToInt(node.vmess_alterid); ep.security = node.vmess_encrypt;
             ep.global_padding = strToBool(node.vmess_global_padding); ep.authenticated_length = strToBool(node.vmess_authenticated_length);
             ep.packet_encoding = node.packet_encoding;
             break;
         case 'vless':
-            ep.uuid = node.uuid; ep.flow = node.vless_flow; ep.packet_encoding = node.packet_encoding;
+            // 🚨 修复：格式化 UUID
+            ep.uuid = normalize_uuid(node.uuid); ep.flow = node.vless_flow; ep.packet_encoding = node.packet_encoding;
             break;
         case 'trojan':
             ep.password = node.password;
@@ -113,7 +125,30 @@ function generate_endpoint(node, self_mark) {
     }
 
     if (node.transport && node.transport !== 'tcp') {
-        ep.transport = { type: node.transport, host: node.http_host || node.httpupgrade_host, path: node.http_path || node.ws_path, headers: node.ws_host ? { Host: node.ws_host } : null, method: node.http_method, max_early_data: strToInt(node.websocket_early_data), early_data_header_name: node.websocket_early_data_header, service_name: node.grpc_servicename, idle_timeout: strToTime(node.http_idle_timeout), ping_timeout: strToTime(node.http_ping_timeout), permit_without_stream: strToBool(node.grpc_permit_without_stream) };
+        // 🚨 架构彻底修复：拆解重组 Transport 结构，对齐 Sing-box 1.8+ 规范
+        let tp = { 
+            type: node.transport, 
+            host: node.http_host || node.httpupgrade_host, 
+            path: node.http_path || node.ws_path, 
+            method: node.http_method, 
+            service_name: node.grpc_servicename, 
+            idle_timeout: strToTime(node.http_idle_timeout), 
+            ping_timeout: strToTime(node.http_ping_timeout), 
+            permit_without_stream: strToBool(node.grpc_permit_without_stream) 
+        };
+
+        // 🚨 核心战果：强制 Host 为数组 [ ]，彻底解决内核崩溃
+        if (node.ws_host) {
+            tp.headers = { "Host": [ node.ws_host ] };
+        }
+        
+        // 🚨 补齐丢失的 Early Data 参数
+        if (node.websocket_early_data) {
+            tp.max_early_data = strToInt(node.websocket_early_data) || 2048;
+            tp.early_data_header_name = node.websocket_early_data_header || "Sec-WebSocket-Protocol";
+        }
+
+        ep.transport = tp;
     }
 
     if (node.multiplex === '1') {
