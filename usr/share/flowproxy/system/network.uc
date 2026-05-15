@@ -40,6 +40,10 @@ function teardown(trace_id) {
                     // [Category C] Note: 注入 || true 屏障，防止网卡在查询与删除间隙丢失引起的异常(Race Condition)
                     ExecSafe(BIN.SH, ['-c', sprintf('ip link set %s down 2>/dev/null || true', safe_dev)], null, trace_id);
                     ExecSafe(BIN.SH, ['-c', sprintf('ip tuntap del mode tun name %s 2>/dev/null || true', safe_dev)], null, trace_id);
+                    // 在 teardown 函数的末尾，return Success 之前加入：
+                    ExecSafe(BIN.SH, ['-c', 'nft list chain inet fw4 forward | grep "singtun" | while read -r line; do handle=$(echo "$line" | awk \'{print $NF}\'); nft delete rule inet fw4 forward handle "$handle"; done'], null, trace_id);
+                    ExecSafe(BIN.SH, ['-c', 'nft list chain inet fw4 input | grep "singtun" | while read -r line; do handle=$(echo "$line" | awk \'{print $NF}\'); nft delete rule inet fw4 input handle "$handle"; done'], null, trace_id);
+                    
                 }
             }
         }
@@ -123,7 +127,6 @@ function setup(trace_id) {
                 ExecSafe(BIN.IP, ['link', 'set', 'dev', tun_name, 'mtu', sprintf("%d", tun_config.mtu)], null, trace_id);
             }
             
-            // ⭐ 物理对齐：BIN.SH 安全沙箱执行
             ExecSafe(BIN.SH, ['-c', 'sleep 0.5'], null, trace_id);
             ExecSafe(BIN.IP, ['link', 'set', tun_name, 'up'], null, trace_id);
 
@@ -133,6 +136,15 @@ function setup(trace_id) {
             
             ExecSafe(BIN.IP, ['route', 'replace', 'default', 'dev', tun_name, 'table', sprintf("%d", ROUTE_TABLES.TUN)], null, trace_id);
             ExecSafe(BIN.IP, ['rule', 'add', 'fwmark', sprintf("%d", ROUTE_TABLES.TUN), 'lookup', sprintf("%d", ROUTE_TABLES.TUN)], null, trace_id);
+
+            // 🚨 架构级修复：复刻 HomeProxy 的防火墙绿灯通行证
+            // 强行在 nftables 的 forward 和 input 链的最顶端插入 accept 规则，防止局域网流量被 OpenWrt 物理拦截
+            ExecSafe(BIN.SH, ['-c', sprintf('nft insert rule inet fw4 forward oifname "%s" counter accept', tun_name)], null, trace_id);
+            ExecSafe(BIN.SH, ['-c', sprintf('nft insert rule inet fw4 input iifname "%s" counter accept', tun_name)], null, trace_id);
+            // 允许 TUN 网卡自身的流量转发（配合 auto_route）
+            ExecSafe(BIN.SH, ['-c', sprintf('nft insert rule inet fw4 forward iifname "%s" counter accept', tun_name)], null, trace_id);
+            // 解决可能存在的 MSS / MTU 阻塞导致网页打不开的问题
+            ExecSafe(BIN.SH, ['-c', sprintf('nft insert rule inet fw4 forward oifname "%s" tcp flags syn tcp option maxseg size set rt mtu', tun_name)], null, trace_id);
 
             if (ipv6_support) {
                 ExecSafe(BIN.IP, ['-6', 'route', 'replace', 'default', 'dev', tun_name, 'table', sprintf("%d", ROUTE_TABLES.TUN)], null, trace_id);
