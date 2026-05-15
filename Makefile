@@ -92,4 +92,18 @@ fi
 exit 0
 endef
 
+# [Category B] 卸载前置干预：安全剥离资源与物理软链
+define Package/luci-app-flowproxy/prerm
+#!/bin/sh
+if [ -z "$${IPKG_INSTROOT}" ]; then
+	# 停止服务并取消开机自启
+	/etc/init.d/flowproxy stop 2>/dev/null
+	/etc/init.d/flowproxy disable 2>/dev/null
+	
+	# 🚨 安全卸载：销毁我们在 postinst 中创建的 Ucode 引擎寻址软链
+	rm -f /usr/share/ucode/flowproxy
+fi
+exit 0
+endef
+
 $(eval $(call BuildPackage,luci-app-flowproxy))
