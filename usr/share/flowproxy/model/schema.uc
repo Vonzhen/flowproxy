@@ -1,11 +1,15 @@
 /**
- * FlowProxy | model/schema.uc | v1.14 Aligned Edition
- * 配置抽象提取器 (SSOT Aligned Edition)
+ * FlowProxy | model/schema.uc | v1.0 TProxy-Redirect Full-Armor Edition
+ * 职责：从 UCI 读取用户意图，构建系统抽象数据模型 (FlowModel)。
+ * 核心对齐：全面回归 TProxy+Redirect 架构，对接 1.0 Result 协议，清除 TUN 依赖。
  */
 
 'use strict';
 
+// 🚨 铁律 5: 原生模块解构导入
 import { cursor } from 'uci';
+
+// 🚨 铁律 3: 绝对命名空间寻址
 import { PATH } from 'flowproxy.core.constants';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
@@ -15,6 +19,7 @@ function strToBool(val) { return (val != null && val !== "") ? (val === '1' || v
 function strToTime(val) { return (val != null && val !== "") ? (val) : null; }
 function parse_port(val) { return strToInt(val); }
 
+// 架构修复：全局 UUID 补全器，专治机场残缺 32 位 UUID，满足网关严格质检
 function normalize_uuid(u) {
     if (!u || type(u) !== 'string') return u;
     if (length(u) === 32 && index(u, '-') < 0) {
@@ -27,35 +32,30 @@ const U_CONFIG = 'flowproxy';
 const S_INFRA = 'infra';
 const S_MAIN = 'config';
 
+/**
+ * 组装 Sing-box 入站平面 (Inbounds)
+ * 完美复刻 TProxy + Redirect 双擎，向下兼容 UI 混合模式变量
+ */
 function build_inbounds(u) {
     let inbounds = [];
     let mixed_port = u.get(U_CONFIG, S_INFRA, 'mixed_port');
     let dns_port = u.get(U_CONFIG, S_INFRA, 'dns_port');
     let proxy_mode = u.get(U_CONFIG, S_MAIN, 'proxy_mode');
 
+    // 基础管理入站
     if (dns_port) push(inbounds, { type: 'direct', tag: 'dns-in', listen: '::', listen_port: strToInt(dns_port) });
     if (mixed_port) push(inbounds, { type: 'mixed', tag: 'mixed-in', listen: '::', listen_port: strToInt(mixed_port), set_system_proxy: false });
     
+    // 🚨 核心复刻：依据 UI 变量动态分发 TCP 与 UDP 物理拦截闸门
     if (match(proxy_mode, /redirect/)) {
-        let redirect_port = u.get(U_CONFIG, S_INFRA, 'redirect_port');
+        let redirect_port = u.get(U_CONFIG, S_INFRA, 'redirect_port') || '5331';
         push(inbounds, { type: 'redirect', tag: 'redirect-in', listen: '::', listen_port: strToInt(redirect_port) });
     }
     if (match(proxy_mode, /tproxy/)) {
-        let tproxy_port = u.get(U_CONFIG, S_INFRA, 'tproxy_port');
+        let tproxy_port = u.get(U_CONFIG, S_INFRA, 'tproxy_port') || '5332';
         push(inbounds, { type: 'tproxy', tag: 'tproxy-in', listen: '::', listen_port: strToInt(tproxy_port), network: 'udp' });
     }
-    if (match(proxy_mode, /tun/)) {
-        push(inbounds, {
-            type: 'tun',
-            tag: 'tun-in',
-            interface_name: u.get(U_CONFIG, S_INFRA, 'tun_name') || 'singtun0',
-            address: [ u.get(U_CONFIG, S_INFRA, 'tun_addr4') || '172.19.0.1/30' ],
-            mtu: strToInt(u.get(U_CONFIG, S_INFRA, 'tun_mtu') || '9000'),
-            auto_route: true,
-            strict_route: true,
-            stack: 'mixed'
-        });
-    }
+    // 💡 备忘：TUN 组装管线已奉旨无限期终止，彻底绝后
 
     u.foreach(U_CONFIG, 'server', (cfg) => {
         if (cfg.enabled !== '1') return;
@@ -135,6 +135,7 @@ function generate_endpoint(node, self_mark) {
             permit_without_stream: strToBool(node.grpc_permit_without_stream) 
         };
 
+        // 核心战果：强制 Host 为数组 [ ]，消灭高版本内核崩溃
         if (node.ws_host) { tp.headers = { "Host": [ node.ws_host ] }; }
         if (node.websocket_early_data) {
             tp.max_early_data = strToInt(node.websocket_early_data) || 2048;
@@ -234,9 +235,9 @@ function build_policies(u, valid_outbounds) {
         push(route.rule_set, { type: cfg.type, tag: sprintf("cfg-%s-rule", cfg['.name']), format: cfg.format, path: cfg.path });
     });
 
-    // 🚨 1.14.0 核心修复：全局嗅探与协议级 DNS 劫持
+    // 🚨 1.14+ 核心捍卫：全局嗅探与官方标准原生 DNS 劫持机制
     push(route.rules, { action: "sniff" });
-    push(route.rules, { protocol: "dns", action: "hijack-dns" });
+    push(route.rules, { inbound: "dns-in", action: "hijack-dns" });
     push(route.rules, { action: "resolve", strategy: u.get(U_CONFIG, 'routing', 'domain_strategy') || 'prefer_ipv4' });
 
     u.foreach(U_CONFIG, 'routing_rule', (cfg) => {
@@ -269,14 +270,13 @@ function build_policies(u, valid_outbounds) {
          route.final = final_out;
     }
 
-    let def_dns =u.get(U_CONFIG, 'dns', 'default_server' );
-    if (def_dns) dns.final =sprintf( "cfg-%s-dns", def_dns );
+    let def_dns = u.get(U_CONFIG, 'dns', 'default_server');
+    if (def_dns) dns.final = sprintf("cfg-%s-dns", def_dns);
     
     let default_outbound_dns = u.get(U_CONFIG, 'routing', 'default_outbound_dns');
-    if (default_outbound_dns) route.default_domain_resolver = { server: sprintf( "cfg-%s-dns", default_outbound_dns) };
+    if (default_outbound_dns) route.default_domain_resolver = { server: sprintf("cfg-%s-dns", default_outbound_dns) };
 
-    // 🚨 1.14.0 救命药：自动探测物理网卡，防止 missing default interface 死锁
-    route.auto_detect_interface = true;
+    // 💡 架构备注：route.auto_detect_interface 已在 TProxy 架构下彻底退役，消灭全局竞争漏洞
 
     return { route, dns, default_out };
 }
@@ -298,6 +298,10 @@ function build_experimental(u) {
     return exp_model;
 }
 
+/**
+ * 核心流水线构建函数
+ * 遵循 1.0 Result 协议封装，带有全局防爆 TRY...CATCH 装甲
+ */
 function build_flow_model(trace_id) {
     try {
         let u = cursor();
@@ -325,13 +329,15 @@ function build_flow_model(trace_id) {
             dns: pd.dns
         };
 
-        // 🚨 架构修复：NTP 逻辑已连根拔除，确保 Sing-box 不在启动时因对时而死锁。
+        // 💡 架构备注：宿主本机 NTP 逻辑已自此彻底连根拔除，消灭冷启动死锁源
 
         return Success(flow_model, 200, trace_id);
     } catch(e) {
+        // 🚨 铁律 6：隐式异常捕获与类型安全转换
         let err_str = "" + e;
         return Fail(ERR.E_CONFIG_FAULT, "Schema Build Exception: " + err_str, trace_id);
     }
 }
 
+// 🚨 铁律 1: 文件末尾统一集中导出，捍预零件身份
 export { build_flow_model };
