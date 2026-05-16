@@ -31,6 +31,7 @@ import { task_rebuild_groups } from 'flowproxy.modules.groups';
 import { task_update_assets, task_rollback_assets } from 'flowproxy.modules.assets';
 import { task_update_kernel } from 'flowproxy.modules.kernel'; 
 import { send_telegram } from 'flowproxy.modules.notifier';
+import { task_update_resources } from 'flowproxy.modules.resources';
 
 function Log(module, level, msg, job_id) {
     sys_log(job_id, level, module, msg);
@@ -203,6 +204,34 @@ function _handle_update_kernel(job_id, payload) {
     }
 }
 
+function _handle_update_resources(job_id, payload) {
+    Log('WORKER', 'INFO', 'Delegating task to Resources Manager...', job_id);
+    try {
+        let res = task_update_resources(job_id, payload.target);
+        if (!res.ok) return Fail(ERR.E_SYSTEM_BUSY, res.detail, job_id);
+
+        let data = res.data || {};
+        let msg = "";
+        
+        if (data.updated) {
+            msg = sprintf("✅ 资源 [%s] 更新成功！当前版本: %s", payload.target, data.version);
+            Log('WORKER', 'INFO', 'Resource updated. Triggering firewall validation...', job_id);
+            // 🚨 防火墙资源变了，必须触发系统安全重载 (让 firewall.uc 重新生成 .nft)
+            safe_system_reload(job_id, 'update_resources');
+            msg += "%0A[RESTART_PENDING]";
+        } else {
+            msg = sprintf("✅ 资源 [%s] 已是最新版本: %s", payload.target, data.version);
+            Log('WORKER', 'INFO', 'No changes detected. Reload skipped.', job_id);
+            msg += "%0A♻️ 服务无需重启";
+        }
+        
+        return Success({ msg: msg }, 200, job_id);
+    } catch(e) { 
+        let err_msg = "" + e;
+        return Fail(ERR.E_SYSTEM_BUSY, "Resources handler failed: " + err_msg, job_id); 
+    }
+}
+
 function _handle_update_subscriptions(job_id, payload) {
     Log('WORKER', 'INFO', 'Starting subscription update sequence...', job_id);
     
@@ -277,6 +306,7 @@ const HANDLERS = {
     "update_subscriptions": _handle_update_subscriptions,
     "rebuild_groups": _handle_rebuild_groups,
     "update_assets": _handle_update_assets,
+    "update_resources": _handle_update_resources, 
     "system_rollback": _handle_system_rollback,
     "update_kernel": _handle_update_kernel,
     "deploy_panels": _handle_deploy_panels
