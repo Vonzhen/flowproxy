@@ -1,6 +1,6 @@
 // --- [ FlowProxy | 状态与监控视图模块 | v1.0 Contract Aligned Edition ] ---
 // 功能：渲染系统运行状态大盘、内核管理、通信拨测与运行时日志展示
-// 核心升级：废除 service.list 轮询，全量接入 System 真相引擎；修复 RPC 命名空间对齐与解包契约。
+// 核心升级：废除 service.list 轮询，全量接入 System 真相引擎；恢复资源管理 UI 面板。
 
 'use strict';
 'require dom';
@@ -12,7 +12,7 @@
 'require ui';
 'require view';
 
-// [Category A] 模块依赖对齐：废弃 job，接入统一的 observer
+// [Category A] 模块依赖对齐：废弃裸奔 job，接入统一的 observer 状态机
 'require flowproxy.observer as observer';
 
 // --- [ 子模块1：基础辅助函数与 CSS 注入 ] ---
@@ -30,7 +30,7 @@ const css = `
     background-color: #33ccff;
 }`;
 
-// [Category B] 物理路径对齐：严格指向战线A中新规划的聚合日志目录
+// [Category B] 物理路径对齐：严格指向 Constants.uc 规划的聚合日志目录
 const fp_dir = '/var/run/flowproxy/logs';
 
 // ⭐ 对接 Truth Chain：接入唯一的真实状态快照引擎
@@ -47,6 +47,7 @@ const callConnectionCheck = rpc.declare({
     expect: { '': {} }
 });
 
+// ⭐ 恢复资源版本查询 RPC 通道
 const callGetResVersion = rpc.declare({
     object: 'flowproxy.system',
     method: 'resources_get_version',
@@ -99,18 +100,19 @@ function getConnStat(o, site) {
     ]);
 }
 
+// ⭐ 恢复核心引擎：获取资源版本并绑定更新钩子
 function getResVersion(o, type) {
-    // ⭐ 使用同步 RPC 查询版本号，不走 Job 队列
+    // 使用同步 RPC 查询版本号，不走 Job 队列
     return L.resolveDefault(callGetResVersion(type), {}).then((ret) => {
-        // [Category A] 防御性解包
+        // [Category A] 防御性解包，兼容 v1.0 Result 协议
         let res = (ret && ret.data) ? ret.data : ret;
         
         let spanTemp = E('div', { 'style': 'cbi-value-field' }, [
             E('button', {
                 'class': 'btn cbi-button cbi-button-action',
                 'click': ui.createHandlerFn(this, () => {
-                    // [Category B] 指令对齐：切换为 observer.execute
-                    return observer.execute('update_assets', { action: 'update', target: type }, '🔄 检查资源更新')
+                    // [Category B] 架构对齐：抛弃 fs.exec_direct，转由 observer 唤醒后端 Worker 异步处理
+                    return observer.execute('update_resources', { action: 'update', target: type }, '🔄 检查资源更新')
                         .then(() => location.reload())
                         .catch(() => {});
                 })
@@ -167,7 +169,7 @@ function getRuntimeLog(o, name, _option_index, section_id, _in_table) {
 
     let log;
     poll.add(L.bind(() => {
-        // [Category C] Note: 维持 fs.read_direct，但路径已通过 fp_dir 对齐到 /var/run/flowproxy/logs
+        // [Category C] Note: 维持 fs.read_direct，路径已通过 fp_dir 对齐到 /var/run/flowproxy/logs
         return fs.read_direct(String.format('%s/%s.log', fp_dir, filename), 'text')
         .then((res) => {
             log = E('pre', { 'wrap': 'pre' }, [ res.trim() || _('Log is empty.') ]);
@@ -232,6 +234,24 @@ return view.extend({
         s = m.section(form.NamedSection, 'config', 'flowproxy', _('Resources management'));
         s.anonymous = true;
 
+        // 🚨 恢复 UI 渲染区：四大战略资源白名单版本检视
+        o = s.option(form.DummyValue, '_china_ip4_version', _('China IPv4 list version'));
+        o.cfgvalue = L.bind(getResVersion, this, o, 'china_ip4');
+        o.rawhtml = true;
+
+        o = s.option(form.DummyValue, '_china_ip6_version', _('China IPv6 list version'));
+        o.cfgvalue = L.bind(getResVersion, this, o, 'china_ip6');
+        o.rawhtml = true;
+
+        o = s.option(form.DummyValue, '_china_list_version', _('China list version'));
+        o.cfgvalue = L.bind(getResVersion, this, o, 'china_list');
+        o.rawhtml = true;
+
+        o = s.option(form.DummyValue, '_gfw_list_version', _('GFW list version'));
+        o.cfgvalue = L.bind(getResVersion, this, o, 'gfw_list');
+        o.rawhtml = true;
+
+        // --- [ 子模块 2.3：内核动力管理区 ] ---
         o = s.option(form.DummyValue, '_kernel_manager', _('Sing-box 内核管理'));
         o.description = _('检查版本并选择性热替换。建议定期检查并保持内核处于活跃版本。');
         o.renderWidget = function(section_id, option_index, cfgvalue) {
@@ -253,9 +273,8 @@ return view.extend({
                 check_btn.disabled = true;
                 check_btn.textContent = '🔄 正在执行检查...';
 
-                // ⭐ 内核版本检查改用系统同步查询
+                // ⭐ 内核版本检查使用系统同步查询
                 L.resolveDefault(callKernelVersionCheck(), {}).then(ret => {
-                    // [Category A] 防御性解包
                     let data = (ret && ret.data) ? ret.data : ret;
                     
                     check_btn.disabled = false;
@@ -288,7 +307,7 @@ return view.extend({
             }}, '🔍 检查线上版本');
 
             let do_update = function(track) {
-                // [Category B] 指令对齐：切换为 observer.execute
+                // [Category B] 指令对齐：切换为 observer.execute，隔离裸壳操作
                 observer.execute('update_kernel', { track: track }, '🚀 Sing-box 内核热升级').then(() => {
                     setTimeout(() => { location.reload(); }, 1500);
                 }).catch(() => {});
