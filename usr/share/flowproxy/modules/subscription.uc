@@ -176,8 +176,8 @@ function _parse_node_uri(uri, global_opts) {
     let default_label = (url && url.hash) ? url.hash : "";
     let scheme_upper = uc(scheme); 
 
-    // 完美复刻 HomeProxy 的 insecure 识别逻辑
-    let p_insec = params.allowInsecure || params.insecure || "";
+    // 🚨 架构修复：同时兼容驼峰命名(allowInsecure)、简写(insecure) 和 下划线命名(allow_insecure)！
+    let p_insec = params.allowInsecure || params.insecure || params.allow_insecure || "";
     let is_insec = (p_insec === '1' || p_insec === 'true') ? '1' : '0';
 
     let v_json = null, ss_parts, full_dec, full_url, up, dec, hy2_pass;
