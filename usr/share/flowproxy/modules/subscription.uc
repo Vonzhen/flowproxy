@@ -18,7 +18,10 @@ import { log } from 'flowproxy.core.logger';
 function _net_fetch(url, user_agent, trace_id) {
     let tmp_file = sprintf("%s/fp_sub_dl_%d.txt", PATH.RUNTIME, time());
     
-    let curl_args = ["-s", "-L", "-k", "-4", "--connect-timeout", "15"];
+    // 🚨 终极绝杀：强行接入 Sing-box 大脑 (-x socks5h)。
+    // 这样不仅能完美解析您的自建域名，还能享受 Sing-box 的国内直连分流规则！
+    let curl_args = ["-s", "-L", "-k", "-4", "-m", "15", "-x", "socks5h://127.0.0.1:5330"];
+    
     if (user_agent && length(user_agent) > 0) {
         push(curl_args, "-A");
         push(curl_args, user_agent);
@@ -27,7 +30,8 @@ function _net_fetch(url, user_agent, trace_id) {
     push(curl_args, tmp_file);
     push(curl_args, url);
 
-    ExecSafe(BIN.CURL, curl_args, null, trace_id);
+    // 🚨 同步解除沙箱封印，给予 15 秒充足的拉取与分流时间
+    ExecSafe(BIN.CURL, curl_args, { timeout: 15 }, trace_id);
 
     let content = null;
     let fd = fs_open(tmp_file, "r");
@@ -250,7 +254,7 @@ function _parse_node_uri(uri, global_opts) {
             } else if (params.type === 'grpc') { config.grpc_servicename = params.serviceName || ""; }
             break;
         case 'tuic':
-            config = { label: default_label, type: 'tuic', address: url.hostname, port: url.port, uuid: url.username, password: url.password || "", tls: '1', tls_sni: params.sni || "", tuic_congestion_control: params.congestion_control || "", tuic_udp_relay_mode: params.udp_relay_mode || "", tls_alpn: params.alpn || "" };
+            config = { label: default_label, type: 'tuic', address: url.hostname, port: url.port, uuid: url.username, password: url.password || "", tls: '1', tls_sni: params.sni || "", tuic_congestion_control: params.congestion_control || "", tuic_udp_relay_mode: params.udp_relay_mode || "", tls_alpn: params.alpn || "", tls_insecure: is_insec };
             break;
         case 'anytls':
             config = { label: default_label, type: 'anytls', address: url.hostname, port: url.port, password: url.username, tls: '1', tls_sni: params.sni || "", tls_insecure: is_insec };

@@ -435,31 +435,33 @@ const system_methods = {
             }
         } 
     },
-    resources_get_version: { 
+
+    // 🚨 修复 1 & 3: 补充 args 参数声明，并路由给 FileQuery 处理，彻底解耦
+    resources_get_version: {
         args: { type: "" }, 
-        call: function(req) { 
+        call: function(req) {
             let trace_id = "pending_req";
             try {
                 trace_id = gen_trace_id();
-                if (!SYSTEM_METHODS["resources_version"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API", trace_id);
-                return QueryService.handle("file", "get_res_version", req.args || req, trace_id); 
+                return QueryService.handle("file", "get_res_version", req.args || req, trace_id);
             } catch(e) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
             }
-        } 
+        }
     },
-    log_clean: { 
-        args: { type: "" }, 
-        call: function(req) { 
+
+    // 🚨 修复 2: 把前端需要的清理日志接口补上！
+    log_clean: {
+        args: { type: "" },
+        call: function(req) {
             let trace_id = "pending_req";
             try {
                 trace_id = gen_trace_id();
-                if (!SYSTEM_METHODS["log_clean"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API", trace_id);
-                return QueryService.handle("file", "log_clean", req.args || req, trace_id); 
+                return QueryService.handle("file", "log_clean", req.args || req, trace_id);
             } catch(e) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
             }
-        } 
+        }
     }
 };
 

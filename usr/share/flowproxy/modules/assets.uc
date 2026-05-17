@@ -154,7 +154,10 @@ function _auto_inject_uci(name, file_path, trace_id) {
     uctx.set(UCICONFIG, sec_id, "format", "binary");
     uctx.set(UCICONFIG, sec_id, "path", file_path);
     
+    // 🚨 修复 3：补全 UCI 保存铁律，生成暂存快照，确保落盘不丢失！
+    uctx.save(UCICONFIG);
     uctx.commit(UCICONFIG);
+    
     log(trace_id, 'INFO', 'ASSETS', sprintf("成功注册节点: %s", sec_id));
 }
 
@@ -194,6 +197,9 @@ function _download_manual(target_str, trace_id) {
         let name = names[i];
         if (!name) continue;
         
+        // 🚨 修复 1：强行剥离用户输入可能自带的 .srs 后缀，消灭双后缀 404 惨案！
+        name = replace(name, regexp('\\.srs$'), '');
+        
         let final_path = sprintf("%s/%s.srs", RULE_DIR, name);
         let tmp_path = sprintf("%s/%s.srs.tmp", TMP_DIR, name);
         let urls = _generate_urls(name, base_url, private_repo);
@@ -215,6 +221,11 @@ function _download_manual(target_str, trace_id) {
             log(trace_id, 'ERROR', 'ASSETS', '❌ 下载失败: ' + name);
             push(fail_items, name);
         }
+    }
+    
+    // 🚨 修复 2：拦截虚假繁荣，如果全军覆没，强行拉响失败警报！
+    if (length(updated_items) === 0 && length(fail_items) > 0) {
+        return Fail(ERR.E_SYSTEM_BUSY, "规则集全部下载失败，请检查网络或名称", trace_id);
     }
     
     // [Category B] 抛出富结构数据载荷

@@ -23,7 +23,8 @@ const JOB_TYPES = {
     "update_assets": true,         // 更新规则资源
     "system_rollback": true,       // 紧急安全回滚 (容灾恢复)
     "update_kernel": true,         // 内核二进制更新
-    "deploy_panels": true          // 部署前端面板资源
+    "deploy_panels": true,         // 部署前端面板资源
+    "update_resources": true       // 更新IP域名资源 
 };
 
 /**

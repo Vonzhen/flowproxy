@@ -115,7 +115,9 @@ function send_telegram(task_type, status, msg_text, trace_id) {
 
         let api_url = sprintf("https://api.telegram.org/bot%s/sendMessage", token);
         let curl_args = [
-            "-sk", "-X", "POST", api_url,
+            "-sk", 
+            "-x", "socks5h://127.0.0.1:5330", // 🚨 核心装甲：强制让 Sing-box 代理 DNS 解析与 TCP 握手，无视运营商投毒！
+            "-X", "POST", api_url,
             "-d", "chat_id=" + chat_id,
             "-d", "parse_mode=HTML",
             "-d", "disable_web_page_preview=true",
@@ -124,7 +126,8 @@ function send_telegram(task_type, status, msg_text, trace_id) {
 
         log(trace_id, 'INFO', 'NOTIFIER', 'Dispatching formatted Telegram notification...');
         
-        let res = ExecSafe(BIN.CURL, curl_args, { timeout: 10 }, trace_id);
+        // 🚨 战术微调：由于通过代理走出国门，将超时时间从 10 秒稍微放宽到 15 秒，增加容错率
+        let res = ExecSafe(BIN.CURL, curl_args, { timeout: 15 }, trace_id);
 
         if (res.ok) {
             return Success({ sent: true }, 200, trace_id);
