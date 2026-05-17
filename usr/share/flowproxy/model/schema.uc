@@ -16,7 +16,12 @@ import { Success, Fail } from 'flowproxy.core.result';
 
 function strToInt(val) { return (val != null && val !== "") ? int(val) : null; }
 function strToBool(val) { return (val != null && val !== "") ? (val === '1' || val === 'true') : null; }
-function strToTime(val) { return (val != null && val !== "") ? (val) : null; }
+function strToTime(val) { 
+    if (val !=null && val !=="") {
+       return match(val,/^[0-9]+$/) ? val + "s" : val;
+    }
+    return null;
+}
 function parse_port(val) { return strToInt(val); }
 
 // 架构修复：全局 UUID 补全器，专治机场残缺 32 位 UUID，满足网关严格质检
@@ -117,6 +122,7 @@ function generate_endpoint(node, self_mark) {
             ep.password = node.password;
             break;
         case 'socks':
+        case 'anytls': ep.password = node.password; break;
         case 'http':
             ep.version = node.type === 'socks' ? node.socks_version : null;
             ep.username = node.username; ep.password = node.password;
@@ -136,7 +142,7 @@ function generate_endpoint(node, self_mark) {
         };
 
         // 核心战果：强制 Host 为数组 [ ]，消灭高版本内核崩溃
-        if (node.ws_host) { tp.headers = { "Host": [ node.ws_host ] }; }
+        if (node.ws_host) { tp.headers = { "Host": node.ws_host }; }
         if (node.websocket_early_data) {
             tp.max_early_data = strToInt(node.websocket_early_data) || 2048;
             tp.early_data_header_name = node.websocket_early_data_header || "Sec-WebSocket-Protocol";
@@ -149,7 +155,7 @@ function generate_endpoint(node, self_mark) {
     }
 
     if (node.tls === '1') {
-        ep.tls = { enabled: true, server_name: node.tls_sni, insecure: strToBool(node.tls_insecure), alpn: node.tls_alpn ? split(node.tls_alpn, ',') : null, min_version: node.tls_min_version, max_version: node.tls_max_version, cipher_suites: node.tls_cipher_suites ? split(node.tls_cipher_suites, ',') : null, certificate_path: node.tls_cert_path, utls: node.tls_utls ? { enabled: true, fingerprint: node.tls_utls } : null, reality: (node.tls_reality === '1') ? { enabled: true, public_key: node.tls_reality_public_key, short_id: node.tls_reality_short_id } : null, ech: (node.tls_ech === '1') ? { enabled: true, config: node.tls_ech_config, config_path: node.tls_ech_config_path } : null };
+        ep.tls = { enabled: true, server_name: node.tls_sni, insecure: strToBool(node.tls_insecure), alpn: (type(node.tls_alpn) === 'array') ? node.tls_alpn : (node.tls_alpn ? split(node.tls_alpn, ',') : null), min_version: node.tls_min_version, max_version: node.tls_max_version, cipher_suites: (type(node.tls_cipher_suites) === 'array') ? node.tls_cipher_suites : (node.tls_cipher_suites ? split(node.tls_cipher_suites, ',') : null), certificate_path: node.tls_cert_path, utls: node.tls_utls ? { enabled: true, fingerprint: node.tls_utls } : ((node.type === 'tuic' || node.type === 'hysteria2' || node.type === 'hysteria') ? null : { enabled: true, fingerprint: 'chrome' }), reality: (node.tls_reality === '1') ? { enabled: true, public_key: node.tls_reality_public_key, short_id: node.tls_reality_short_id } : null, ech: (node.tls_ech === '1') ? { enabled: true, config: node.tls_ech_config, config_path: node.tls_ech_config_path } : null };
     }
     return ep;
 }
@@ -270,13 +276,13 @@ function build_policies(u, valid_outbounds) {
          route.final = final_out;
     }
 
+    route.auto_detect_interface = true;
+
     let def_dns = u.get(U_CONFIG, 'dns', 'default_server');
     if (def_dns) dns.final = sprintf("cfg-%s-dns", def_dns);
     
     let default_outbound_dns = u.get(U_CONFIG, 'routing', 'default_outbound_dns');
     if (default_outbound_dns) route.default_domain_resolver = { server: sprintf("cfg-%s-dns", default_outbound_dns) };
-
-    // 💡 架构备注：route.auto_detect_interface 已在 TProxy 架构下彻底退役，消灭全局竞争漏洞
 
     return { route, dns, default_out };
 }
