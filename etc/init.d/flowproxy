@@ -21,20 +21,26 @@ prepare_env() {
     mkdir -p "$RUN_DIR"
     mkdir -p "$LOG_DIR"
     mkdir -p "$JOB_DIR"
-    mkdir -p "$RUN_DIR/resources"  # 🚨 补充：面板规则集等资源文件的易失性挂载点
+    mkdir -p "$RUN_DIR/resources"
     
     # 强制覆盖权限，防止首次安装时因 umask 导致 procd 无法读写
     chmod -R 0755 "$RUN_DIR"
     chown -R root:root "$RUN_DIR" 2>/dev/null
+
+    # 🚨 架构完善：每次启动服务时，自动清空失败计数器，解除 Watchdog 的熔断锁定
+    rm -f /tmp/flowproxy.fail_count 2>/dev/null
 
     # [Category C] Note: 定时任务属于系统级配置，目前由 init.d 阶段统一下发
     update_cron
 }
 
 update_cron() {
-    # [Category C] Note: 防御性 I/O 断言。确保目标挂载点绝对可用，防止极端精简固件下报 File Not Found
+    # 防御性 I/O 断言。确保目标挂载点绝对可用
     touch /etc/crontabs/root 2>/dev/null || true
+    
+    # 1. 清理历史任务，防止重复写入导致无限叠加
     sed -i '/# FlowProxy-Cron/d' /etc/crontabs/root 2>/dev/null || true
+    sed -i '/# FlowProxy-Watchdog/d' /etc/crontabs/root 2>/dev/null || true
 
     local sub_auto=$(uci -q get flowproxy.subscription.auto_update)
     local sub_time=$(uci -q get flowproxy.subscription.auto_update_time)
@@ -42,6 +48,7 @@ update_cron() {
     local asset_auto=$(uci -q get flowproxy.assets.auto_update)
     local asset_time=$(uci -q get flowproxy.assets.update_time)
 
+    # 2. 注入业务定时更新任务 (订阅与规则集)
     if [ "$sub_auto" = "1" ] && [ -n "$sub_time" ]; then
         echo "0 $sub_time * * * ubus call flowproxy.job start '{\"type\":\"update_subscriptions\",\"payload\":{\"scope\":\"all\"}}' # FlowProxy-Cron" >> /etc/crontabs/root
     fi
@@ -50,14 +57,52 @@ update_cron() {
         echo "0 $asset_time * * * ubus call flowproxy.job start '{\"type\":\"update_assets\",\"payload\":{\"action\":\"update\",\"target\":\"manual\"}}' # FlowProxy-Cron" >> /etc/crontabs/root
     fi
 
-    /etc/init.d/cron restart
+    # ===================================================================
+    # 🚨 3. 注入系统级 Watchdog 自愈探针 (每 1 分钟执行一次) [P2 阶段新增]
+    # ===================================================================
+    local def_out=$(uci -q get flowproxy.routing.default_outbound)
+    if [ "$def_out" != "disabled" ] && [ "$def_out" != "nil" ]; then
+        # 仅在服务处于“启用”意图时，才挂载守护犬
+        echo "* * * * * ucode -e 'push(REQUIRE_SEARCH_PATH, \"/usr/share/ucode/*.uc\"); import { HealthCheck } from \"flowproxy.runtime.healthcheck\"; HealthCheck.watchdog(\"wd_\" + time());' # FlowProxy-Watchdog" >> /etc/crontabs/root
+    fi
+
+    # ===================================================================
+    # 🚨 4. 注入日志防失忆压缩钩子 (每天凌晨 3 点执行) [P3 阶段新增]
+    # ===================================================================
+    # 每天凌晨 03:00，自动将当天的 CRIT/ERROR/WARN 错误日志提取并打包到持久化分区
+    echo "0 3 * * * ucode -e 'push(REQUIRE_SEARCH_PATH, \"/usr/share/ucode/*.uc\"); import { logrotate } from \"flowproxy.core.logger\"; logrotate();' # FlowProxy-Cron" >> /etc/crontabs/root
+
+    # 重启系统的 cron 守护进程，让新加的定时任务立即生效
+    /etc/init.d/cron restart >/dev/null 2>&1
 }
 
 # [Category B] 服务启动入口 (Start Phase)
 # 职责：拦截禁用意图，阻塞调用同步生成网关，托管 procd 实例
 start_service() {
-    # 🚨 架构修复：控制面环境初始化必须前置。
-    # 确保即使节点未配置或服务被禁用，UI 与 Worker 的任务队列目录依然可用。
+    # 🚨 1. 建立全局互斥锁：防止 UI 高频点击与 WAN 波动导致的重入死锁
+    exec 9>/var/run/flowproxy.lock
+    if ! flock -n 9; then
+        logger -t flowproxy "[START] Concurrent execution blocked. Lock acquired by another process."
+        return 1
+    fi
+
+    # 🚨 2. 开机时序竞态保护 (Boot Sequence Race)
+    # 职责：等待底层网络组件就绪，防止半初始化状态下注入防火墙规则导致遗失。
+    local wait_time=0
+    while [ $wait_time -lt 15 ]; do
+        # 探测 fw4 表存在且 dnsmasq 进程存活
+        if nft list table inet fw4 >/dev/null 2>&1 && pgrep dnsmasq >/dev/null 2>&1; then
+            break
+        fi
+        sleep 2
+        wait_time=$((wait_time + 2))
+    done
+
+    if [ $wait_time -ge 15 ]; then
+        logger -t flowproxy "[START] WARN: Boot sequence dependencies not fully ready. Proceeding anyway."
+    fi
+
+    # 🚨 控制面环境初始化必须前置
     prepare_env
 
     # 1. 意图拦截 (数据面启动许可验证)
@@ -68,20 +113,20 @@ start_service() {
     fi
 
     # 2. 阻塞调用同步网关 (Route B 核心)
-    # [Category C] Warning: 必须确保 generate.uc 在失败时返回非 0，以阻断 procd 继续执行
     logger -t flowproxy "[START] Invoking synchronous runtime gateway..."
     if ! ucode /usr/share/flowproxy/runtime/generate.uc; then
         logger -t flowproxy "[START] FATAL: Gateway failed to generate artifact. Start aborted."
         return 1
     fi
 
-    # 4. Procd 实例托管
+    # 3. Procd 实例托管与网络装配
     if [ -s "$CONF_FILE" ]; then
-        # ===================================================================
-        # 🚨 战车挂挡指令：图纸已生成，立刻唤醒网络底层装配机！
-        # ===================================================================
         logger -t flowproxy "[START] Assembling TProxy network environment..."
-        ucode -e 'push(REQUIRE_SEARCH_PATH, "/usr/share/ucode/*.uc"); import { setup } from "flowproxy.system.network"; setup("init_start");' || true
+        
+        # ===================================================================
+        # 🚨 3. 架构修复：使用安全沙盒 import 模块，验证 Result 包装状态，一旦失败硬阻断进程！
+        # ===================================================================
+        ucode -e 'push(REQUIRE_SEARCH_PATH, "/usr/share/ucode/*.uc"); import { setup } from "flowproxy.system.network"; let res = setup("init_start"); if (!res || !res.ok) exit(1);' || return 1
 
         procd_open_instance "main"
         procd_set_param command "$PROG" run -c "$CONF_FILE"
@@ -90,7 +135,7 @@ start_service() {
         procd_set_param stderr 1
         procd_set_param pidfile /var/run/flowproxy.pid
 
-        # [Category C] Note: 兼容特定内核版本的特性修复
+        # 兼容特定内核版本的特性修复
         uname -r | grep -Eq "^6\.6" && procd_set_param env "QUIC_GO_DISABLE_GSO"="true"
 
         procd_close_instance
@@ -104,10 +149,17 @@ start_service() {
 # [Category B] 服务销毁入口 (Stop Phase)
 # 职责：幂等清理网络栈，双重保险清理运行时产物
 stop_service() {
+    # 🚨 建立全局互斥锁
+    exec 9>/var/run/flowproxy.lock
+    if ! flock -n 9; then
+        logger -t flowproxy "[STOP] Concurrent execution blocked. Lock acquired by another process."
+        return 1
+    fi
+
     logger -t flowproxy "[STOP] Initiating service teardown..."
 
     # 1. 阻塞调用网络卸载网关
-    # [Category C] Warning: 附加 || true，确保 ucode 引擎异常崩溃时，不会阻断后续的物理清理与定时任务回收
+    # 🚨 统一调用标准，执行清理
     ucode -e 'push(REQUIRE_SEARCH_PATH, "/usr/share/ucode/*.uc"); import { teardown } from "flowproxy.system.network"; teardown("init_stop");' || true
 
     # 2. 物理清除运行时产物 (双重保险)
@@ -117,6 +169,7 @@ stop_service() {
     # 3. 🚨 架构修复：回收系统级定时任务，消灭僵尸态泄漏
     touch /etc/crontabs/root 2>/dev/null || true
     sed -i '/# FlowProxy-Cron/d' /etc/crontabs/root 2>/dev/null || true
+    sed -i '/# FlowProxy-Watchdog/d' /etc/crontabs/root 2>/dev/null || true
     /etc/init.d/cron restart >/dev/null 2>&1
 
     logger -t flowproxy "[STOP] Teardown complete."
@@ -125,6 +178,13 @@ stop_service() {
 # [Category B] 服务重载入口 (Reload Phase)
 # 职责：回归原生语义，通过系统级 restart 实现状态彻底刷新
 reload_service() {
+    # 🚨 建立全局互斥锁
+    exec 9>/var/run/flowproxy.lock
+    if ! flock -n 9; then
+        logger -t flowproxy "[RELOAD] Concurrent execution blocked. Lock acquired by another process."
+        return 1
+    fi
+
     logger -t flowproxy "[RELOAD] Intercepted. Delegating to native restart sequence."
     restart
 }
