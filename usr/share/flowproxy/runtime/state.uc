@@ -25,8 +25,33 @@ const PATH_STAGED_CONFIG = sprintf("%s/sing-box-new.json", PATH.RUNTIME);
 const PATH_BACKUP_CONFIG = sprintf("%s/sing-box-backup.json", PATH.RUNTIME);
 const PATH_TXN_MARKER    = sprintf("%s/txn.marker", PATH.RUNTIME);
 const PATH_RUNNING_PID   = PATH.RUNNING_PID;
+const PATH_RUNTIME_STATE = sprintf("%s/runtime.state", PATH.RUNTIME); 
 
 const StateManager = {
+
+    /**
+     * 写入硬化诊断全息状态 (P3阶段引入)
+     * @param {object} payload - { apply_id, desired_generation, actual_generation, last_error, last_repair, degraded_reason }
+     */
+    record_state: function(payload) {
+        let current = {};
+        if (stat(PATH_RUNTIME_STATE)) {
+            let content = readfile(PATH_RUNTIME_STATE);
+            if (content) current = json(content) || {};
+        }
+        
+        for (let k in payload) {
+            current[k] = payload[k];
+        }
+        current.updated_at = time();
+
+        let fd = fs_open(PATH_RUNTIME_STATE, "w");
+        if (fd) {
+            fd.write(sprintf("%.J", current));
+            fd.close();
+        }
+    },
+    
     write_staged: function(json_str, trace_id) {
         let fd = fs_open(PATH_STAGED_CONFIG, "w");
         if (!fd) return Fail(ERR.E_SYSTEM_BUSY, "Cannot write staged config.", trace_id);
@@ -199,16 +224,22 @@ const StateManager = {
             }
 
             // 🚨 架构修复 2: 移除字面量正则
-            // 使用安全的字符串分割提取版本号
             let ver_res = ExecSafe(BIN.SINGBOX, ["version"], null, trace_id);
             if (ver_res.ok && ver_res.data && ver_res.data.stdout) {
                 let parts = split(ver_res.data.stdout, "\n");
                 if (length(parts) > 0) {
                     let first_line_words = split(parts[0], " ");
                     if (length(first_line_words) >= 3) {
-                        snap.version.singbox = first_line_words[2]; // 提取 "sing-box version 1.14..." 中的版本号
+                        snap.version.singbox = first_line_words[2];
                     }
                 }
+            }
+
+            // 🚨 将诊断全息状态注入快照
+            snap.diagnostic = {};
+            if (stat(PATH_RUNTIME_STATE)) {
+                let st_content = readfile(PATH_RUNTIME_STATE);
+                if (st_content) snap.diagnostic = json(st_content) || {};
             }
 
             return Success(snap, 200, trace_id);
