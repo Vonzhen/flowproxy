@@ -37,49 +37,96 @@ function Log(module, level, msg, job_id) {
     sys_log(job_id, level, module, msg);
 }
 
-// [Category B] 系统重载触发器与蓝绿部署预检引擎 (Pre-flight Validation)
-// 职责：生成沙盒配置并调用内核预检。若存在致命错误，则阻断重启并视任务类型触发自愈。
+// [Category B] 系统重载触发器与事务型部署预检引擎 (4-Step Transaction Apply)
+// 职责：严格遵循 Prepare -> Apply -> Verify -> Fallback，阻断假健康与半配置态。
 function safe_system_reload(job_id, job_type) {
-    Log('WORKER', 'INFO', 'Initiating pre-flight validation sandbox...', job_id);
+    Log('WORKER', 'INFO', 'Initiating 4-step Transactional Apply...', job_id);
 
-    // [Category C] Note: 消除硬编码 A。假设 constants.uc 已定义 PATH.BASE = '/usr/share/flowproxy'
     let gateway_script = sprintf("%s/runtime/generate.uc", PATH.BASE);
+    let config_path = sprintf("%s/sing-box-run.json", PATH.RUNTIME);
+    let bak_path = config_path + ".bak";
 
-    // 1. 同步生成沙盒配置 (Dry Run)
+    // ==========================================
+    // [Step 1: Prepare] 生成与沙盒预检
+    // ==========================================
+    Log('WORKER', 'INFO', '[Step 1] Prepare: Generating and validating configuration...', job_id);
+    
+    // 物理备份上一版安全配置
+    ExecSafe(BIN.CP, ["-f", config_path, bak_path], null, job_id);
+
+    // 重新生成配置图纸
     let gen_res = ExecSafe(BIN.UCODE, [gateway_script], null, job_id);
     if (!gen_res.ok) {
-        // 严格遵循 Ucode 异常抛出铁律，使用 die() 替代 throw
+        ExecSafe(BIN.MV, ["-f", bak_path, config_path], null, job_id); // 立即还原
         die("配置生成网关执行失败: " + gen_res.detail);
     }
 
-    // 2. 调用 launcher 进行内核级语法与规则集预检
-    // [Category C] Note: 消除硬编码 B。基于 PATH.RUNTIME 常量推导
-    let config_path = sprintf("%s/sing-box-run.json", PATH.RUNTIME);
+    // 内核级离线语法预检
     let check_res = check(config_path, {caller: 'runtime.manager'}, job_id);
-
-    if (check_res.ok) {
-        // 3. 预检通过，放行底层平滑重启
-        Log('WORKER', 'INFO', 'Pre-flight validation passed. Firing system restart...', job_id);
+    if (!check_res.ok) {
+        ExecSafe(BIN.MV, ["-f", bak_path, config_path], null, job_id); // 发现致命错误，撤销脏图纸
         
-        // [Category C] Note: 消除硬编码 C。假设 constants.uc 已定义 PATH.INIT = '/etc/init.d/flowproxy'
-        let init_cmd = sprintf("%s restart", PATH.INIT);
-        ExecSafe(BIN.SH, ["-c", init_cmd], null, job_id);
-    } else {
-        // 4. 🚨 预检拦截！阻断脏数据污染守护进程
-        Log('WORKER', 'CRIT', 'Pre-flight validation FAILED.', job_id);
-
-        // 仅对涉及外部资产下载的任务触发物理回滚，防止误判 UI 手动填错的 UCI 语法错误
+        // 针对资产类引发的崩溃触发容灾回退
         if (job_type === 'update_assets' || job_type === 'update_subscriptions' || job_type === 'rebuild_groups') {
-            Log('WORKER', 'WARN', 'Asset corruption detected (e.g. 404 HTML). Initiating emergency rollback.', job_id);
+            Log('WORKER', 'WARN', 'Asset corruption detected. Initiating emergency rollback.', job_id);
             task_rollback_assets(job_id, {});
-            
-            // 恢复 .bak 备份后，必须重新生成一遍安全的 JSON 沙盒，供下次安全启动使用
-            ExecSafe(BIN.UCODE, [gateway_script], null, job_id);
+            ExecSafe(BIN.UCODE, [gateway_script], null, job_id); // 重新压制一份安全的 JSON 供下次自愈使用
         }
-
-        // 严格遵循 Ucode 异常抛出铁律，抛出异常中断当前任务，旧守护进程毫发无损
         die("安全预检拦截：新配置存在致命语法或规则集损坏，引擎拒载。细节: " + check_res.detail);
     }
+
+    // ==========================================
+    // [Step 2: Apply] 注入内核与进程重启
+    // ==========================================
+    Log('WORKER', 'INFO', '[Step 2] Apply: Firing system restart & network setup...', job_id);
+    let init_cmd = sprintf("%s restart", PATH.INIT);
+    let apply_res = ExecSafe(BIN.SH, ["-c", init_cmd], null, job_id);
+
+    // ==========================================
+    // [Step 3: Verify] 回读内核态数据面校验
+    // ==========================================
+    Log('WORKER', 'INFO', '[Step 3] Verify: Checking Kernel Data Plane (nft & ip rule)...', job_id);
+    let verify_ok = true;
+    let verify_detail = "";
+
+    if (!apply_res.ok) {
+        verify_ok = false;
+        verify_detail = "Init 脚本重启失败或底层 network.setup 注入被硬阻断。";
+    } else {
+        // [Category C] Note: 正则探测屏蔽了后续的硬编码耦合，只要带 flowproxy 的表和规则存活即视为接管成功
+        let nft_check = ExecSafe(BIN.SH, ["-c", "nft list table inet flowproxy"], null, job_id);
+        let ip_check = ExecSafe(BIN.SH, ["-c", "ip rule show"], null, job_id);
+
+        if (!nft_check.ok || !nft_check.data.stdout) {
+            verify_ok = false;
+            verify_detail = "nft table 'inet flowproxy' 未成功注入内核。";
+        }
+    }
+
+    // ==========================================
+    // [Step 4: Fallback] 灾难回滚
+    // ==========================================
+    if (!verify_ok) {
+        Log('WORKER', 'CRIT', '[Step 4] Fallback: Verify FAILED! Tearing down and reverting to safe state...', job_id);
+        
+        // 1. 强力销毁半残的脏规则，防止流量黑洞
+        let td_cmd = sprintf("ucode -S %s/system/network.uc teardown", PATH.BASE);
+        ExecSafe(BIN.SH, ["-c", td_cmd], null, job_id);
+        
+        // 2. 物理停用残损进程
+        let stop_cmd = sprintf("%s stop", PATH.INIT);
+        ExecSafe(BIN.SH, ["-c", stop_cmd], null, job_id);
+        
+        // 3. 恢复上一版本可靠的 JSON
+        ExecSafe(BIN.MV, ["-f", bak_path, config_path], null, job_id);
+        
+        // 4. 发起自愈：用旧 JSON 尝试拉起最后一次健康状态
+        ExecSafe(BIN.SH, ["-c", init_cmd], null, job_id);
+
+        die("事务应用失败，内核态校验未通过 (Data Plane Broken)。已安全回滚网络栈与配置。详情: " + verify_detail);
+    }
+
+    Log('WORKER', 'INFO', 'Transaction Apply Complete. System is HEALTHY.', job_id);
 }
 
 // ==========================================
