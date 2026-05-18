@@ -53,5 +53,38 @@ function log(trace_id, level, mod, message) {
     }
 }
 
-// 🚨 铁律 1: 文件末尾统一导出
-export { log };
+/**
+ * P3 日志防失忆钩子 (V1.0 宪法对齐版)
+ */
+function logrotate() {
+    try {
+        // 1. 严格使用 Constants 常量
+        ExecSafe(BIN.MKDIR, ["-p", PATH.LOG_ARCHIVE]);
+        
+        if (!stat(PATH.LOG_SYS)) return; 
+
+        let dt_res = ExecSafe(BIN.DATE, ["+%Y%m%d_%H%M"]);
+        let dt_str = (dt_res.ok && dt_res.data) ? trim(dt_res.data.stdout || "") : "" + time();
+        let archive_file = sprintf("%s/sys_%s_warn.log", PATH.LOG_ARCHIVE, dt_str);
+        
+        // 2. 提取致命日志
+        let cmd = sprintf("grep -E 'WARN|CRIT|ERROR|FATAL' %s > %s 2>/dev/null", PATH.LOG_SYS, archive_file);
+        ExecSafe(BIN.SH, ["-c", cmd]);
+        
+        // 3. 🚨 架构修复：使用 Ucode 原生 fs 截断文件，保护常驻进程的 file descriptor
+        let fd = open(PATH.LOG_SYS, "w");
+        if (fd) {
+            fd.write(""); // 写入空，底层自动截断至 0 字节
+            fd.close();
+        }
+        
+        // 4. 压缩并清理 7 天前存档
+        ExecSafe(BIN.SH, ["-c", sprintf("gzip -f %s", archive_file)]);
+        ExecSafe(BIN.SH, ["-c", sprintf("find %s -type f -name '*.gz' -mtime +7 -delete 2>/dev/null", PATH.LOG_ARCHIVE)]);
+        
+    } catch(e) {
+        let err = "" + e;
+    }
+}
+
+export { log, logrotate };
