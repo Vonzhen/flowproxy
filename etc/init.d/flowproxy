@@ -18,19 +18,23 @@ export UCODE_PATH=/usr/share/ucode
 # [Category B] 基础环境初始化模块
 # 职责：确保运行时依赖的目录结构和基础状态完整
 prepare_env() {
+    # 1. 易失性运行时目录 (Tmpfs)
     mkdir -p "$RUN_DIR"
     mkdir -p "$LOG_DIR"
     mkdir -p "$JOB_DIR"
     mkdir -p "$RUN_DIR/resources"
     
+    # 2. 🚨 架构修正：持久化归档目录 (Overlay)，统一由 init.d 初始化
+    mkdir -p "/overlay/log/flowproxy_archive"
+    
     # 强制覆盖权限，防止首次安装时因 umask 导致 procd 无法读写
     chmod -R 0755 "$RUN_DIR"
     chown -R root:root "$RUN_DIR" 2>/dev/null
 
-    # 🚨 架构完善：每次启动服务时，自动清空失败计数器，解除 Watchdog 的熔断锁定
+    # 每次启动服务时，自动清空失败计数器，解除 Watchdog 的熔断锁定
     rm -f /tmp/flowproxy.fail_count 2>/dev/null
 
-    # [Category C] Note: 定时任务属于系统级配置，目前由 init.d 阶段统一下发
+    # 更新系统定时任务
     update_cron
 }
 
