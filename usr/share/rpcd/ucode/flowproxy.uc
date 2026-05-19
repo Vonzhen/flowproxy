@@ -223,19 +223,42 @@ const FileQuery = {
     },
 
     log_clean: function(args, trace_id) {
-        let t = args.type;
-        let path = "";
-        if (index(['system', 'sing-box', 'flowproxy', 'main'], t) !== -1) {
-            path = sprintf("%s/system.log", PATH.LOG);
-        } else if (match(t, regexp('^[a-zA-Z0-9_-]+$'))) { // 🚨 架构修复
-            path = sprintf("%s/%s.log", PATH.JOB, t);
+        try {
+            let t = args.type;
+            let path = "";
+
+            // 1. 根据前端传参精准路由到对应的日志文件名
+            if (index(['system', 'sing-box', 'flowproxy', 'main'], t) !== -1) {
+                let filename = (t === 'sing-box') ? 'sing-box.log' : 'system.log';
+                // 🚨 修正：严格对齐 constants.uc 中的 LOG_DIR 常量名
+                path = sprintf("%s/%s", PATH.LOG_DIR, filename); 
+            } else if (match(t, regexp('^[a-zA-Z0-9_-]+$'))) { 
+                // 异步任务后台日志清理
+                path = sprintf("%s/%s.log", PATH.JOB, t);
+            }
+
+            // 2. 物理层文件安全校验与截断
+            if (path && lstat(path)) { 
+                // 使用原生的 fs_open 配合 "w" (O_TRUNC) 模式，瞬间清空大小且保护句柄
+                let fd = fs_open(path, "w");
+                if (!fd) {
+                    log(trace_id, 'ERROR', 'GATEWAY', 'Failed to open log file fd for truncation: ' + path);
+                    return Success({ result: false }, 200, trace_id);
+                }
+                fd.write(""); 
+                fd.close(); 
+                
+                log(trace_id, 'INFO', 'GATEWAY', sprintf('Log file at [%s] atomically truncated via RPC.', path));
+                return Success({ result: true }, 200, trace_id); 
+            }
+            
+            // 路径无效或文件不存在时返回 false
+            return Success({ result: false }, 200, trace_id);
+        } catch(e) {
+            let err_msg = "" + e;
+            log(trace_id, 'CRIT', 'GATEWAY', 'Log clean RPC action crashed: ' + err_msg);
+            return Success({ result: false, error: err_msg }, 200, trace_id);
         }
-        if (path && lstat(path)) { 
-            writefile(path, ''); 
-            log(trace_id, 'INFO', 'GATEWAY', sprintf('Log file [%s] cleaned via RPC.', t));
-            return Success({ result: true }, 200, trace_id); 
-        }
-        return Success({ result: false }, 200, trace_id);
     }
 };
 
