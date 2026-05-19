@@ -66,8 +66,8 @@ update_cron() {
     # ===================================================================
     local def_out=$(uci -q get flowproxy.routing.default_outbound)
     if [ "$def_out" != "disabled" ] && [ "$def_out" != "nil" ]; then
-        # 仅在服务处于“启用”意图时，才挂载守护犬
-        echo "* * * * * ucode -e 'push(REQUIRE_SEARCH_PATH, \"/usr/share/ucode/*.uc\"); import { HealthCheck } from \"flowproxy.runtime.healthcheck\"; HealthCheck.watchdog(\"wd_\" + time());' # FlowProxy-Watchdog" >> /etc/crontabs/root
+        # 仅在服务处于“启用”意图时，才挂载守护犬 (🚨 修正：指向纯粹的 watchdog 模块)
+        echo "* * * * * ucode -e 'push(REQUIRE_SEARCH_PATH, \"/usr/share/ucode/*.uc\"); import { run_watchdog } from \"flowproxy.runtime.watchdog\"; run_watchdog(\"wd_\" + time());' # FlowProxy-Watchdog" >> /etc/crontabs/root
     fi
 
     # ===================================================================
@@ -84,7 +84,7 @@ update_cron() {
 # 职责：拦截禁用意图，阻塞调用同步生成网关，托管 procd 实例
 start_service() {
     # 🚨 1. 建立全局互斥锁：防止 UI 高频点击与 WAN 波动导致的重入死锁
-    exec 9>/var/run/flowproxy.lock
+    exec 9>/var/run/flowproxy_init.lock
     if ! flock -n 9; then
         logger -t flowproxy "[START] Concurrent execution blocked. Lock acquired by another process."
         return 1
@@ -154,7 +154,7 @@ start_service() {
 # 职责：幂等清理网络栈，双重保险清理运行时产物
 stop_service() {
     # 🚨 建立全局互斥锁
-    exec 9>/var/run/flowproxy.lock
+    exec 9>/var/run/flowproxy_init.lock
     if ! flock -n 9; then
         logger -t flowproxy "[STOP] Concurrent execution blocked. Lock acquired by another process."
         return 1
@@ -183,7 +183,7 @@ stop_service() {
 # 职责：回归原生语义，通过系统级 restart 实现状态彻底刷新
 reload_service() {
     # 🚨 建立全局互斥锁
-    exec 9>/var/run/flowproxy.lock
+    exec 9>/var/run/flowproxy_init.lock
     if ! flock -n 9; then
         logger -t flowproxy "[RELOAD] Concurrent execution blocked. Lock acquired by another process."
         return 1
