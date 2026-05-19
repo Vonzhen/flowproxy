@@ -102,17 +102,29 @@ return view.extend({
 
         s = m.section(form.TypedSection);
         s.render = function () {
-            poll.add(function () {
-                return L.resolveDefault(getServiceStatus()).then((res) => {
-                    let view = document.getElementById('service_status');
-                    view.innerHTML = renderStatus(res.isRunning, features.version);
-                });
-            });
+    poll.add(function () {
+        return L.resolveDefault(getServiceStatus()).then((res) => {
+            let view = document.getElementById('service_status');
+            
+            // 清空旧内容
+            while (view.firstChild) view.removeChild(view.firstChild);
+            
+            // 安全的原生 DOM 渲染
+            let spanColor = res.isRunning ? 'green' : 'red';
+            let statusText = res.isRunning ? _('RUNNING') : _('NOT RUNNING');
+            
+            view.appendChild(E('em', {}, [
+                E('span', { 'style': 'color:' + spanColor }, [
+                    E('strong', {}, _('FlowProxy') + ` (sing-box v${features.version}) ${statusText}`)
+                ])
+            ]));
+        });
+    });
 
-            return E('div', { class: 'cbi-section', id: 'status_bar' }, [
-                E('p', { id: 'service_status' }, _('Collecting data...'))
-            ]);
-        }
+    return E('div', { class: 'cbi-section', id: 'status_bar' }, [
+        E('p', { id: 'service_status' }, _('Collecting data...'))
+    ]);
+}
 
         s = m.section(form.NamedSection, 'config', 'flowproxy');
 
@@ -1055,50 +1067,48 @@ return view.extend({
         o.depends('routing_mode', 'custom');
         o.description = '一键导入智能分流模板作为基础底包。';
         o.renderWidget = function(section_id) {
-            return E('button', {
-                'class': 'btn cbi-button cbi-button-apply',
-                'click': function(ev) {
-                    ev.preventDefault();
-                    if (!confirm('⚠️ 确定要生成智能分流底包吗？\n生成后，请务必将这 3 条新规则移动至列表的最下方（即最后执行）！')) return;
+    return E('button', {
+        'class': 'btn cbi-button cbi-button-apply',
+        'click': function(ev) {
+            ev.preventDefault();
+            if (!confirm('⚠️ 确定要生成智能分流底包吗？\n生成后，请务必将这 3 条新规则移动至列表的最下方！')) return;
 
-                    L.require('fs').then(fs => {
-                        let cmd = `
-                            uci -q delete flowproxy.dns_rule_st_eval
-                            uci -q delete flowproxy.dns_rule_st_route
-                            uci -q delete flowproxy.dns_rule_st_resp
-                            uci add flowproxy dns_rule
-                            uci rename flowproxy.@dns_rule[-1]="dns_rule_st_eval"
-                            uci set flowproxy.dns_rule_st_eval.label="评估"
-                            uci set flowproxy.dns_rule_st_eval.enabled="1"
-                            uci set flowproxy.dns_rule_st_eval.action="evaluate"
-                            uci set flowproxy.dns_rule_st_eval.server="main-dns"
-                            
-                            uci add flowproxy dns_rule
-                            uci rename flowproxy.@dns_rule[-1]="dns_rule_st_route"
-                            uci set flowproxy.dns_rule_st_route.label="判断"
-                            uci set flowproxy.dns_rule_st_route.enabled="1"
-                            uci set flowproxy.dns_rule_st_route.action="route"
-                            uci set flowproxy.dns_rule_st_route.match_response="1"
-                            uci add_list flowproxy.dns_rule_st_route.rule_set="geoipcn"
-                            uci set flowproxy.dns_rule_st_route.server="default-dns"
-                            
-                            uci add flowproxy dns_rule
-                            uci rename flowproxy.@dns_rule[-1]="dns_rule_st_resp"
-                            uci set flowproxy.dns_rule_st_resp.label="响应"
-                            uci set flowproxy.dns_rule_st_resp.enabled="1"
-                            uci set flowproxy.dns_rule_st_resp.action="route"
-                            uci set flowproxy.dns_rule_st_route.server="default-dns"
-                            
-                            uci commit flowproxy
-                        `;
-                        fs.exec_direct('sh', ['-c', cmd]).then(() => {
-                            alert('✅ 模板生成成功！页面即将刷新。');
-                            location.reload();
-                        });
-                    });
-                }
-            }, '一键生成 evaluate 模板');
-        };
+            // 1. 删除旧规则 (如果存在)
+            ['dns_rule_st_eval', 'dns_rule_st_route', 'dns_rule_st_resp'].forEach(name => {
+                uci.remove('flowproxy', name);
+            });
+
+            // 2. 注入 Evaluate 规则
+            let s1 = uci.add('flowproxy', 'dns_rule', 'dns_rule_st_eval');
+            uci.set('flowproxy', s1, 'label', '评估');
+            uci.set('flowproxy', s1, 'enabled', '1');
+            uci.set('flowproxy', s1, 'action', 'evaluate');
+            uci.set('flowproxy', s1, 'server', 'main-dns');
+
+            // 3. 注入 Route 规则
+            let s2 = uci.add('flowproxy', 'dns_rule', 'dns_rule_st_route');
+            uci.set('flowproxy', s2, 'label', '判断');
+            uci.set('flowproxy', s2, 'enabled', '1');
+            uci.set('flowproxy', s2, 'action', 'route');
+            uci.set('flowproxy', s2, 'match_response', '1');
+            uci.set('flowproxy', s2, 'rule_set', ['geoipcn']); // 列表类型必须是数组
+            uci.set('flowproxy', s2, 'server', 'default-dns');
+
+            // 4. 注入 Response 规则
+            let s3 = uci.add('flowproxy', 'dns_rule', 'dns_rule_st_resp');
+            uci.set('flowproxy', s3, 'label', '响应');
+            uci.set('flowproxy', s3, 'enabled', '1');
+            uci.set('flowproxy', s3, 'action', 'route');
+            uci.set('flowproxy', s3, 'server', 'default-dns');
+
+            // 5. 保存并应用
+            uci.save().then(() => uci.apply()).then(() => {
+                alert('✅ 模板生成成功！页面即将刷新。');
+                location.reload();
+            });
+        }
+    }, '一键生成 evaluate 模板');
+};
 
         o = s.taboption('dns_rule', form.SectionValue, '_dns_rule', form.GridSection, 'dns_rule');
         o.depends('routing_mode', 'custom');
