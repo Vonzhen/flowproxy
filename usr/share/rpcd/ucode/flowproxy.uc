@@ -1,8 +1,9 @@
 /**
- * FlowProxy | API Gateway & Query Kernel | v1.1 (Syntax Safe Edition)
+ * FlowProxy | API Gateway & Query Kernel | v1.2 (Hardened Edition)
  * 职责：Ubus 接口暴露，领域查询分发，边界安全拦截。全链路 Trace ID 始发地。
  * 环境适配：全面加装 try-catch 边界防爆装甲，剥离 export，恢复扁平字典结构。
  * 架构更新：彻底抹除所有正则表达式字面量，接入 regexp() 安全沙箱。
+ * 终极修复：填补 API 鉴权漏网之鱼，修复内核输出空指针异常，解决 JSON 弱类型隐性拦截。
  */
 
 'use strict';
@@ -75,7 +76,6 @@ const SystemQuery = {
         if (res.ok && res.data && res.data.stdout) {
             let lines = split(res.data.stdout || "", "\n");
             for (let i = 0; i < length(lines); i++) {
-                // 🚨 架构修复：移除字面量正则
                 let v = match(lines[i], regexp('^sing-box version (.*)'));
                 if (v) features.version = v[1];
                 let t = match(lines[i], regexp('^Tags: (.*)'));
@@ -94,29 +94,20 @@ const SystemQuery = {
         return Success(features, 200, trace_id);
     },
 
-    // [Category B] 职能：检查并提取本地、稳定版、测试版 (Beta) 的内核版本号 (具备 API 鉴权防御)
     version_check: function(trace_id) {
-        // [Category A] 获取本地基础特征与版本
         let local_res = this.get_features(trace_id);
         let local = local_res.ok ? local_res.data.version : "unknown";
         let stable = "unknown";
         let beta = "unknown";
 
-        // [Category B] 获取系统级 GitHub Token (鉴权上下文跨模块对齐)
         let u = cursor();
         u.load("flowproxy");
         let token = u.get("flowproxy", "config", "github_token") || "";
 
-        // [Category A] 内部参数构建工厂，消除冗余，强制实施防伪与报错规范
         let build_curl_args = function(target_url) {
-            // [Category C] Note: 强制加入 -f (--fail) 参数，当 HTTP 状态码 >= 400 时物理中断，拒绝输出污染 JSON
             let args = ["-sSLf", "--connect-timeout", "5"];
-            
-            // 挂载标准防伪 User-Agent
             push(args, "-H");
             push(args, "User-Agent: FlowProxy-OpenWrt-Gateway/1.0");
-            
-            // 提权：挂载身份令牌，突破 60次/小时 的匿名限制墙
             if (token) {
                 push(args, "-H");
                 push(args, "Authorization: token " + token);
@@ -125,7 +116,6 @@ const SystemQuery = {
             return args;
         };
 
-        // [Category B] 获取稳定版 (Stable) 释放信息
         let url_stable = "https://api.github.com/repos/SagerNet/sing-box/releases/latest";
         let res_stable = ExecSafe(BIN.CURL, build_curl_args(url_stable), null, trace_id);
         
@@ -137,11 +127,9 @@ const SystemQuery = {
                 log(trace_id, 'WARN', 'SYSTEM', 'Stable release JSON parse failed: ' + e);
             }
         } else {
-            // [Category C] Warning: 暴露真实的 API 阻断，不再掩饰
             log(trace_id, 'WARN', 'SYSTEM', 'Failed to fetch Stable API. Check network or token validity.');
         }
 
-        // [Category B] 获取测试版 (Beta) 释放信息 (携带载荷剪枝)
         let url_beta = "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=5";
         let res_beta = ExecSafe(BIN.CURL, build_curl_args(url_beta), null, trace_id);
         
@@ -163,7 +151,6 @@ const SystemQuery = {
             log(trace_id, 'WARN', 'SYSTEM', 'Failed to fetch Beta API. Check network or token validity.');
         }
         
-        // [Category A] 严格遵循 RPC 契约，封装标准化出口
         return Success({ local: local, stable: stable, beta: beta }, 200, trace_id);
     }
 };
@@ -179,9 +166,10 @@ const CryptoQuery = {
         if (t === 'reality-keypair') {
             let res = ExecSafe(BIN.SINGBOX, ["generate", "reality-keypair"], { timeout: 3 }, trace_id);
             if (res.ok && res.data) {
-                // 🚨 架构修复：移除字面量正则
-                let priv = match(res.data.stdout, regexp('PrivateKey: ([a-zA-Z0-9_-]+)'));
-                let pub = match(res.data.stdout, regexp('PublicKey: ([a-zA-Z0-9_-]+)'));
+                // 🚨 终极修复 2: 强行赋予默认空字符串，彻底免疫 Null Pointer Exception (空指针地雷)
+                let safe_stdout = res.data.stdout || "";
+                let priv = match(safe_stdout, regexp('PrivateKey: ([a-zA-Z0-9_-]+)'));
+                let pub = match(safe_stdout, regexp('PublicKey: ([a-zA-Z0-9_-]+)'));
                 if (priv && pub) return Success({ result: { private_key: priv[1], public_key: pub[1] } }, 200, trace_id);
             }
             return Fail(ERR.E_SYSTEM_BUSY, "Gen reality-keypair failed", trace_id);
@@ -190,7 +178,9 @@ const CryptoQuery = {
             let raw_domain = args.params || 'example.com';
             let res = ExecSafe(BIN.SINGBOX, ["generate", "ech-keypair", raw_domain], { timeout: 3 }, trace_id);
             if (res.ok && res.data) {
-                let parts = split(res.data.stdout, "\n\n");
+                // 🚨 终极修复 2: 强行赋予默认空字符串，免疫空指针崩溃
+                let safe_stdout = res.data.stdout || "";
+                let parts = split(safe_stdout, "\n\n");
                 if (length(parts) >= 2) return Success({ result: { ech_key: trim(parts[0]), ech_cfg: trim(parts[1]) } }, 200, trace_id);
             }
             return Fail(ERR.E_SYSTEM_BUSY, "Gen ech-keypair failed", trace_id);
@@ -207,7 +197,6 @@ const FileQuery = {
 
     acllist_write: function(args, trace_id) {
         if (index(['direct_list', 'proxy_list'], args.type) === -1) return Fail(ERR.E_SYSTEM_BUSY, 'illegal type', trace_id);
-        // 🚨 架构修复：使用双重反斜杠传递转移符
         let content = replace(trim(args.content || ""), regexp('\\r\\n?', 'g'), '\n');
         if (length(content) > 0 && !match(content, regexp('\\n$'))) content += '\n';
         ExecSafe(BIN.MKDIR, ["-p", PATH.ASSETS], null, trace_id);
@@ -216,36 +205,51 @@ const FileQuery = {
     },
 
     get_res_version: function(args, trace_id) {
-        // 🚨 架构修复：移除字面量正则
         if (!match(args.type, regexp('^[a-z0-9_]+$'))) return Fail(ERR.E_SYSTEM_BUSY, 'invalid type', trace_id);
         let v = readfile(sprintf("%s/%s.ver", PATH.ASSETS, args.type));
         return Success({ version: trim(v || "Unknown") }, 200, trace_id);
     },
 
     log_clean: function(args, trace_id) {
-        let t = args.type;
-        let path = "";
-        if (index(['system', 'sing-box', 'flowproxy', 'main'], t) !== -1) {
-            path = sprintf("%s/system.log", PATH.LOG);
-        } else if (match(t, regexp('^[a-zA-Z0-9_-]+$'))) { // 🚨 架构修复
-            path = sprintf("%s/%s.log", PATH.JOB, t);
+        try {
+            let t = args.type;
+            let path = "";
+
+            if (index(['system', 'sing-box', 'flowproxy', 'main'], t) !== -1) {
+                let filename = (t === 'sing-box') ? 'sing-box.log' : 'system.log';
+                path = sprintf("%s/%s", PATH.LOG_DIR, filename); 
+            } else if (match(t, regexp('^[a-zA-Z0-9_-]+$'))) { 
+                path = sprintf("%s/%s.log", PATH.JOB, t);
+            }
+
+            if (path && lstat(path)) { 
+                let fd = fs_open(path, "w");
+                if (!fd) {
+                    log(trace_id, 'ERROR', 'GATEWAY', 'Failed to open log file fd for truncation: ' + path);
+                    return Success({ result: false }, 200, trace_id);
+                }
+                fd.write(""); 
+                fd.close(); 
+                
+                log(trace_id, 'INFO', 'GATEWAY', sprintf('Log file at [%s] atomically truncated via RPC.', path));
+                return Success({ result: true }, 200, trace_id); 
+            }
+            return Success({ result: false }, 200, trace_id);
+        } catch(e) {
+            let err_msg = "" + e;
+            log(trace_id, 'CRIT', 'GATEWAY', 'Log clean RPC action crashed: ' + err_msg);
+            return Success({ result: false, error: err_msg }, 200, trace_id);
         }
-        if (path && lstat(path)) { 
-            writefile(path, ''); 
-            log(trace_id, 'INFO', 'GATEWAY', sprintf('Log file [%s] cleaned via RPC.', t));
-            return Success({ result: true }, 200, trace_id); 
-        }
-        return Success({ result: false }, 200, trace_id);
     }
 };
 
 const JobQuery = {
     log_read: function(args, trace_id) {
         let job_id = args.job_id;
-        let cursor_pos = args.cursor || 0;
+        // 🚨 终极修复 3: 显式进行 int() 强转，粉碎 JSON 反序列化带来的隐性类型陷阱 (Type Casting Trap)
+        let cursor_pos = int(args.cursor) || 0;
 
         if (type(job_id) !== 'string' || type(cursor_pos) !== 'int') return Success({ lines: [], next_cursor: cursor_pos, eof: true }, 200, trace_id);
-        // 🚨 架构修复：移除字面量正则
         if (!match(job_id, regexp('^[a-zA-Z0-9_-]+$'))) return Success({ lines: [], next_cursor: cursor_pos, eof: true }, 200, trace_id);
 
         let fd = fs_open(sprintf("%s/%s.log", PATH.JOB, job_id), 'r');
@@ -436,13 +440,14 @@ const system_methods = {
         } 
     },
 
-    // 🚨 修复 1 & 3: 补充 args 参数声明，并路由给 FileQuery 处理，彻底解耦
     resources_get_version: {
         args: { type: "" }, 
         call: function(req) {
             let trace_id = "pending_req";
             try {
                 trace_id = gen_trace_id();
+                // 🚨 终极修复 1: 填补漏网之鱼，补齐契约鉴权拦截，保障系统绝对安全
+                if (!SYSTEM_METHODS["resources_get_version"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API: resources_get_version", trace_id);
                 return QueryService.handle("file", "get_res_version", req.args || req, trace_id);
             } catch(e) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
@@ -450,13 +455,14 @@ const system_methods = {
         }
     },
 
-    // 🚨 修复 2: 把前端需要的清理日志接口补上！
     log_clean: {
         args: { type: "" },
         call: function(req) {
             let trace_id = "pending_req";
             try {
                 trace_id = gen_trace_id();
+                // 🚨 终极修复 1: 填补契约鉴权
+                if (!SYSTEM_METHODS["log_clean"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API: log_clean", trace_id);
                 return QueryService.handle("file", "log_clean", req.args || req, trace_id);
             } catch(e) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);

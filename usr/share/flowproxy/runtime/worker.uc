@@ -1,8 +1,9 @@
 /**
- * FlowProxy | runtime/worker.uc | v1.4 (Pre-flight Validation Edition)
+ * FlowProxy | runtime/worker.uc | v1.5 (Fault-Aware Edition)
  * [Category B] 职责：管控后台长时异步任务的生命周期、并发锁与 DFA 状态同步。
  * [Category C] Note: 已全面引入蓝绿部署预检范式。所有涉及配置变更的任务，
  * 必须通过内核沙盒合法性校验后，方可触发 init.d 重启。
+ * 🚨 终极修复：引入部分失败感知 (Partial Failure Awareness)，解决局部故障被掩盖的假阳性通报。
  */
 
 'use strict';
@@ -37,49 +38,85 @@ function Log(module, level, msg, job_id) {
     sys_log(job_id, level, module, msg);
 }
 
-// [Category B] 系统重载触发器与蓝绿部署预检引擎 (Pre-flight Validation)
-// 职责：生成沙盒配置并调用内核预检。若存在致命错误，则阻断重启并视任务类型触发自愈。
+// [Category B] 系统重载触发器与事务型部署预检引擎 (4-Step Transaction Apply)
 function safe_system_reload(job_id, job_type) {
-    Log('WORKER', 'INFO', 'Initiating pre-flight validation sandbox...', job_id);
+    Log('WORKER', 'INFO', 'Initiating 4-step Transactional Apply...', job_id);
 
-    // [Category C] Note: 消除硬编码 A。假设 constants.uc 已定义 PATH.BASE = '/usr/share/flowproxy'
     let gateway_script = sprintf("%s/runtime/generate.uc", PATH.BASE);
+    let config_path = sprintf("%s/sing-box-run.json", PATH.RUNTIME);
+    let bak_path = config_path + ".bak";
 
-    // 1. 同步生成沙盒配置 (Dry Run)
+    // ==========================================
+    // [Step 1: Prepare] 生成与沙盒预检
+    // ==========================================
+    Log('WORKER', 'INFO', '[Step 1] Prepare: Generating and validating configuration...', job_id);
+    
+    ExecSafe(BIN.CP, ["-f", config_path, bak_path], null, job_id);
+
     let gen_res = ExecSafe(BIN.UCODE, [gateway_script], null, job_id);
     if (!gen_res.ok) {
-        // 严格遵循 Ucode 异常抛出铁律，使用 die() 替代 throw
+        ExecSafe(BIN.MV, ["-f", bak_path, config_path], null, job_id); 
         die("配置生成网关执行失败: " + gen_res.detail);
     }
 
-    // 2. 调用 launcher 进行内核级语法与规则集预检
-    // [Category C] Note: 消除硬编码 B。基于 PATH.RUNTIME 常量推导
-    let config_path = sprintf("%s/sing-box-run.json", PATH.RUNTIME);
     let check_res = check(config_path, {caller: 'runtime.manager'}, job_id);
-
-    if (check_res.ok) {
-        // 3. 预检通过，放行底层平滑重启
-        Log('WORKER', 'INFO', 'Pre-flight validation passed. Firing system restart...', job_id);
+    if (!check_res.ok) {
+        ExecSafe(BIN.MV, ["-f", bak_path, config_path], null, job_id); 
         
-        // [Category C] Note: 消除硬编码 C。假设 constants.uc 已定义 PATH.INIT = '/etc/init.d/flowproxy'
-        let init_cmd = sprintf("%s restart", PATH.INIT);
-        ExecSafe(BIN.SH, ["-c", init_cmd], null, job_id);
-    } else {
-        // 4. 🚨 预检拦截！阻断脏数据污染守护进程
-        Log('WORKER', 'CRIT', 'Pre-flight validation FAILED.', job_id);
-
-        // 仅对涉及外部资产下载的任务触发物理回滚，防止误判 UI 手动填错的 UCI 语法错误
         if (job_type === 'update_assets' || job_type === 'update_subscriptions' || job_type === 'rebuild_groups') {
-            Log('WORKER', 'WARN', 'Asset corruption detected (e.g. 404 HTML). Initiating emergency rollback.', job_id);
+            Log('WORKER', 'WARN', 'Asset corruption detected. Initiating emergency rollback.', job_id);
             task_rollback_assets(job_id, {});
-            
-            // 恢复 .bak 备份后，必须重新生成一遍安全的 JSON 沙盒，供下次安全启动使用
-            ExecSafe(BIN.UCODE, [gateway_script], null, job_id);
+            ExecSafe(BIN.UCODE, [gateway_script], null, job_id); 
         }
-
-        // 严格遵循 Ucode 异常抛出铁律，抛出异常中断当前任务，旧守护进程毫发无损
         die("安全预检拦截：新配置存在致命语法或规则集损坏，引擎拒载。细节: " + check_res.detail);
     }
+
+    // ==========================================
+    // [Step 2: Apply] 注入内核与进程重启
+    // ==========================================
+    Log('WORKER', 'INFO', '[Step 2] Apply: Firing system restart & network setup...', job_id);
+    let init_cmd = sprintf("%s restart", PATH.INIT);
+    let apply_res = ExecSafe(BIN.SH, ["-c", init_cmd], null, job_id);
+
+    // ==========================================
+    // [Step 3: Verify] 回读内核态数据面校验
+    // ==========================================
+    Log('WORKER', 'INFO', '[Step 3] Verify: Checking Kernel Data Plane (nft & ip rule)...', job_id);
+    let verify_ok = true;
+    let verify_detail = "";
+
+    if (!apply_res.ok) {
+        verify_ok = false;
+        verify_detail = "Init 脚本重启失败或底层 network.setup 注入被硬阻断。";
+    } else {
+        let nft_check = ExecSafe(BIN.SH, ["-c", "nft list table inet flowproxy"], null, job_id);
+        let ip_check = ExecSafe(BIN.SH, ["-c", "ip rule show"], null, job_id);
+
+        if (!nft_check.ok || !nft_check.data.stdout) {
+            verify_ok = false;
+            verify_detail = "nft table 'inet flowproxy' 未成功注入内核。";
+        }
+    }
+
+    // ==========================================
+    // [Step 4: Fallback] 灾难回滚
+    // ==========================================
+    if (!verify_ok) {
+        Log('WORKER', 'CRIT', '[Step 4] Fallback: Verify FAILED! Tearing down and reverting to safe state...', job_id);
+        
+        let td_cmd = sprintf("ucode -S %s/system/network.uc teardown", PATH.BASE);
+        ExecSafe(BIN.SH, ["-c", td_cmd], null, job_id);
+        
+        let stop_cmd = sprintf("%s stop", PATH.INIT);
+        ExecSafe(BIN.SH, ["-c", stop_cmd], null, job_id);
+        
+        ExecSafe(BIN.MV, ["-f", bak_path, config_path], null, job_id);
+        ExecSafe(BIN.SH, ["-c", init_cmd], null, job_id);
+
+        die("事务应用失败，内核态校验未通过 (Data Plane Broken)。已安全回滚网络栈与配置。详情: " + verify_detail);
+    }
+
+    Log('WORKER', 'INFO', 'Transaction Apply Complete. System is HEALTHY.', job_id);
 }
 
 // ==========================================
@@ -216,7 +253,6 @@ function _handle_update_resources(job_id, payload) {
         if (data.updated) {
             msg = sprintf("✅ 资源 [%s] 更新成功！当前版本: %s", payload.target, data.version);
             Log('WORKER', 'INFO', 'Resource updated. Triggering firewall validation...', job_id);
-            // 🚨 防火墙资源变了，必须触发系统安全重载 (让 firewall.uc 重新生成 .nft)
             safe_system_reload(job_id, 'update_resources');
             msg += "%0A[RESTART_PENDING]";
         } else {
@@ -232,6 +268,7 @@ function _handle_update_resources(job_id, payload) {
     }
 }
 
+// 🚨 终极修复：增加 failed_airports 和 success_airports 收集册，生成带节点明细的清单战报
 function _handle_update_subscriptions(job_id, payload) {
     Log('WORKER', 'INFO', 'Starting subscription update sequence...', job_id);
     
@@ -241,6 +278,8 @@ function _handle_update_subscriptions(job_id, payload) {
     let u = cursor(); 
     u.load("flowproxy");
     let target_airports = [];
+    let failed_airports = [];   // 📝 存放失败机场名字的小本本
+    let success_airports = [];  // 📝 新增：存放成功机场名字及节点数的明细本
 
     if (payload.scope === 'all') {
         u.foreach("flowproxy", "subscription_airport", (s) => {
@@ -269,29 +308,57 @@ function _handle_update_subscriptions(job_id, payload) {
         let res = fetch_and_parse(ap, global_opts, job_id); 
         let valid_nodes = (res.ok && res.data && type(res.data.nodes) === 'array') ? res.data.nodes : [];
 
+        let ap_name = ap.name || ap.id; // 提取机场名字
+
         if (!res.ok || length(valid_nodes) === 0) {
-            Log('WORKER', 'ERROR', sprintf("Airport [%s] fetch failed.", ap.name || ap.id), job_id);
+            Log('WORKER', 'ERROR', sprintf("Airport [%s] fetch failed.", ap_name), job_id);
+            push(failed_airports, ap_name); // 📝 发现拉取失败，记入黑名单
         } else {
             StateManager.sync_uci_nodes(ap.id, valid_nodes, job_id); 
             success_count++;
             total_nodes += length(valid_nodes);
+            // 📝 新增：发现拉取成功，将具体战果记入光荣榜
+            push(success_airports, sprintf("🔹 <b>%s:</b> %d 节点", ap_name, length(valid_nodes)));
         }
     }
 
-    if (success_count === 0) return Fail(ERR.E_SYSTEM_BUSY, "所有订阅均拉取失败", job_id);
+    // 如果彻底全军覆没，把失败名单带在报错里
+    if (success_count === 0) {
+        let fail_msg = "所有订阅均拉取失败";
+        if (length(failed_airports) > 0) {
+            fail_msg += "。失败清单: " + join(", ", failed_airports);
+        }
+        return Fail(ERR.E_SYSTEM_BUSY, fail_msg, job_id);
+    }
 
     Log('WORKER', 'INFO', 'Invoking Dynamic Node Groups Generator...', job_id);
     let group_res = task_rebuild_groups(job_id);
     if (!group_res.ok) return Fail(ERR.E_SYSTEM_BUSY, "组重建失败: " + group_res.detail, job_id);
 
-    // 🚨 架构修复：调用防熔断沙盒预检
     safe_system_reload(job_id, 'update_subscriptions');
     
     let duration = time() - start_time;
-    let summary_msg = "✅ <b>节点重载成功</b>%0A" +
-                      "━━━━━━━━━━━━━━━━━━%0A" +
-                      "📦 <b>任务摘要：</b> 所有订阅源更新完毕，共重载 " + total_nodes + " 个节点。总耗时: " + duration + " 秒。%0A" +
-                      "[RESTART_PENDING]";
+    let summary_msg = "";
+
+    // 🚨 战报重构：生成精细化的列表结构
+    if (length(failed_airports) > 0) {
+        summary_msg += "⚠️ <b>部分订阅更新失败</b>%0A";
+    } else {
+        summary_msg += "✅ <b>订阅全局更新成功</b>%0A";
+    }
+    
+    summary_msg += "━━━━━━━━━━━━━━━━━━%0A";
+    summary_msg += sprintf("⏳ <b>总耗时:</b> %d 秒 | <b>总节点:</b> %d%0A%0A", duration, total_nodes);
+    
+    // 渲染成功清单
+    summary_msg += "📝 <b>更新清单:</b>%0A" + join("%0A", success_airports) + "%0A";
+    
+    // 如果有失败的，在底下追加失败清单
+    if (length(failed_airports) > 0) {
+        summary_msg += "%0A❌ <b>失败断联:</b>%0A" + join(", ", failed_airports) + "%0A";
+    }
+    
+    summary_msg += "%0A[RESTART_PENDING]";
     
     return Success({ msg: summary_msg }, 200, job_id);
 }
@@ -314,8 +381,6 @@ const HANDLERS = {
 
 /**
  * [Category B] Worker 主入口引擎
- * 职责：环境自检、获取分布式锁、状态机迁移及派发 Payload。
- * @param {string} job_id - 任务调度生成的唯一标识
  */
 function main(job_id) {
     if (!job_id) exit(1);
@@ -358,7 +423,6 @@ function main(job_id) {
 
         if (result.ok) {
             transition(job_id, STATE_ENUM.SUCCESS, 100, null, job_id);
-            // [Category A] 动态解析处理器返回的富文本载荷，实施安全回退
             let dynamic_msg = (type(result.data) === 'object' && result.data.msg) ? result.data.msg : "任务执行完毕";
             send_telegram(safe_type, "success", dynamic_msg, job_id);
         } else {
@@ -375,7 +439,6 @@ function main(job_id) {
     exit(0);
 }
 
-// [Category C] Note: 宪法修正：入口脚本严禁使用 export，维持纯粹的自执行独立进程。
 if (length(ARGV) > 0) {
     main(ARGV[0]);
 }

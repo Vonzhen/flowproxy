@@ -25,8 +25,33 @@ const PATH_STAGED_CONFIG = sprintf("%s/sing-box-new.json", PATH.RUNTIME);
 const PATH_BACKUP_CONFIG = sprintf("%s/sing-box-backup.json", PATH.RUNTIME);
 const PATH_TXN_MARKER    = sprintf("%s/txn.marker", PATH.RUNTIME);
 const PATH_RUNNING_PID   = PATH.RUNNING_PID;
+const PATH_RUNTIME_STATE = sprintf("%s/runtime.state", PATH.RUNTIME); 
 
 const StateManager = {
+
+    /**
+     * 写入硬化诊断全息状态 (P3阶段引入)
+     * @param {object} payload - { apply_id, desired_generation, actual_generation, last_error, last_repair, degraded_reason }
+     */
+    record_state: function(payload) {
+        let current = {};
+        if (stat(PATH_RUNTIME_STATE)) {
+            let content = readfile(PATH_RUNTIME_STATE);
+            if (content) current = json(content) || {};
+        }
+        
+        for (let k in payload) {
+            current[k] = payload[k];
+        }
+        current.updated_at = time();
+
+        let fd = fs_open(PATH_RUNTIME_STATE, "w");
+        if (fd) {
+            fd.write(sprintf("%.J", current));
+            fd.close();
+        }
+    },
+    
     write_staged: function(json_str, trace_id) {
         let fd = fs_open(PATH_STAGED_CONFIG, "w");
         if (!fd) return Fail(ERR.E_SYSTEM_BUSY, "Cannot write staged config.", trace_id);
@@ -70,19 +95,12 @@ const StateManager = {
     },
     
     verify_health: function(job_id, timeout_sec) {
-        let hc_res = HealthCheck.verify_connection(job_id, timeout_sec);
+        // 🚨 修正：直接呼叫新版只读体检员
+        let hc_res = HealthCheck.verify();
         
         if (!hc_res.ok) {
-             return Fail(ERR.E_SYSTEM_BUSY, hc_res.detail, job_id);
-        }
-        
-        let hc_data = hc_res.data;
-        if (!hc_data.l1_valid) {
-            return Fail(ERR.E_SYSTEM_BUSY, "Local proxy port failed to bind. " + (hc_data.error || ""), job_id);
-        }
-        
-        if (!hc_data.l2_valid) {
-            log(job_id, "WARN", "STATE", "L2 Outbound Check FAILED. Process is alive, keeping configuration.");
+             let err_detail = "Health check failed on: " + join(", ", hc_res.failed);
+             return Fail(ERR.E_SYSTEM_BUSY, err_detail, job_id);
         }
         
         return Success(true, 200, job_id);
@@ -147,68 +165,31 @@ const StateManager = {
             let u = cursor();
             u.load("flowproxy");
             
-            // 🚨 修复契约错位：兼容前端传递的 nil 禁用标识
             let def_out = u.get("flowproxy", "routing", "default_outbound");
             let is_enabled = def_out != null && def_out !== "disabled" && def_out !== "nil";
 
+            // 🚨 彻底抛弃原有的模糊 netstat 扫描，直接呼叫专职的只读质检员
+            let health_info = HealthCheck.verify();
+
             let snap = {
-                process: { running: false, pid: 0 },
-                config: { valid: false, path: PATH.RUN_JSON },
-                health: { ok: false, latency_ms: 0 },
-                ports: { mixed: 5330, dns: 5333, listening: false },
-                version: { singbox: "" },
-                contract: { valid: true, errors: [] },
+                process: { running: health_info.ok || index(health_info.failed, "pid") === -1 },
+                config: { valid: stat(PATH.RUN_JSON) != null },
+                // 诚实的三态投射：ok 为 true 就是 healthy，否则就是损坏或降级
+                health: { 
+                    state: health_info.ok ? "healthy" : (length(health_info.failed) > 2 ? "broken" : "degraded"),
+                    failed: health_info.failed 
+                },
+                ports: { mixed: 5330, dns: 5333 },
+                version: { singbox: "1.x-managed" },
                 enabled: is_enabled,
                 reason: is_enabled ? "Configured" : "Disabled by user intent"
             };
 
-            // 🚨 架构修复 1: 强身份校验探活
-            // 抛弃 pidof 模糊扫描。改为读取专属 pid 文件，并通过 /proc/ cmdline 确认身份合法性。
-            let pid_str = trim(readfile(PATH_RUNNING_PID) || "");
-            if (length(pid_str) > 0) {
-                let proc_cmdline_path = sprintf("/proc/%s/cmdline", pid_str);
-                let cmdline_content = readfile(proc_cmdline_path);
-                
-                // 如果进程存在，且启动命令中明确包含了我们 FlowProxy 专属的运行目录，才算是我们的进程
-                if (cmdline_content && index(cmdline_content, PATH.RUNTIME) !== -1) {
-                    snap.process.running = true;
-                    snap.process.pid = +(pid_str);
-                }
-            }
-
-            // 2. Config 就绪状态
-            if (stat(PATH.RUN_JSON)) {
-                snap.config.valid = true;
-            }
-
-            // 3. UCI 端口读取
-            let uci_mixed = u.get("flowproxy", "infra", "mixed_port");
-            let uci_dns = u.get("flowproxy", "infra", "dns_port");
-            if (uci_mixed) snap.ports.mixed = +uci_mixed;
-            if (uci_dns) snap.ports.dns = +uci_dns;
-
-            // 4. L1 端口探测
-            if (snap.process.running) {
-                let net_res = ExecSafe(BIN.NETSTAT, ["-ptln"], null, trace_id);
-                let mixed_port_str = sprintf(":%d ", snap.ports.mixed);
-                let net_out = (net_res.ok && net_res.data) ? (net_res.data.stdout || "") : "";
-                
-                snap.ports.listening = (index(net_out, mixed_port_str) !== -1);
-                snap.health.ok = snap.ports.listening; 
-                snap.health.latency_ms = 0; 
-            }
-
-            // 🚨 架构修复 2: 移除字面量正则
-            // 使用安全的字符串分割提取版本号
-            let ver_res = ExecSafe(BIN.SINGBOX, ["version"], null, trace_id);
-            if (ver_res.ok && ver_res.data && ver_res.data.stdout) {
-                let parts = split(ver_res.data.stdout, "\n");
-                if (length(parts) > 0) {
-                    let first_line_words = split(parts[0], " ");
-                    if (length(first_line_words) >= 3) {
-                        snap.version.singbox = first_line_words[2]; // 提取 "sing-box version 1.14..." 中的版本号
-                    }
-                }
+            // 注入持久化诊断
+            snap.diagnostic = {};
+            if (stat(PATH_RUNTIME_STATE)) {
+                let st_content = readfile(PATH_RUNTIME_STATE);
+                if (st_content) snap.diagnostic = json(st_content) || {};
             }
 
             return Success(snap, 200, trace_id);

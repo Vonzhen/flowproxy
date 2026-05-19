@@ -50,6 +50,10 @@ function build_firewall(trace_id) {
         let tproxy_port = strToInt(u.get('flowproxy', 'infra', 'tproxy_port')) || 5332;
         let dns_port = strToInt(u.get('flowproxy', 'infra', 'dns_port')) || 5333;
         
+        // 🚨 架构修复：动态读取边界标识
+        let self_mark = u.get('flowproxy', 'infra', 'self_mark') || '100';
+        let tproxy_mark = u.get('flowproxy', 'infra', 'tproxy_mark') || '101';
+        
         let cn_ipv4_elements = load_resource('china_ip4.txt');
         let cn_ipv6_elements = load_resource('china_ip6.txt');
         
@@ -98,7 +102,7 @@ function build_firewall(trace_id) {
         // ==========================================
         push(rules, "    chain prerouting_mangle {");
         push(rules, "        type filter hook prerouting priority mangle - 5; policy accept;");
-        push(rules, "        meta mark { 100, 255 } counter return"); // 免疫环回无限死锁
+        push(rules, sprintf("        meta mark { %s, 255 } counter return", self_mark)); // 免疫环回无限死锁
         push(rules, "        meta l4proto udp jump process_udp_prerouting");
         push(rules, "    }");
 
@@ -107,7 +111,7 @@ function build_firewall(trace_id) {
         // ==========================================
         push(rules, "    chain output_nat {");
         push(rules, "        type nat hook output priority filter - 5; policy accept;");
-        push(rules, "        meta mark { 100, 255 } counter return"); // 放行 Sing-box 自身发出的 TCP
+        push(rules, sprintf("        meta mark { %s, 255 } counter return", self_mark)); // 放行 Sing-box 自身发出的 TCP
         push(rules, "        meta l4proto tcp jump process_tcp");
         push(rules, "    }");
 
@@ -116,7 +120,7 @@ function build_firewall(trace_id) {
         // ==========================================
         push(rules, "    chain output_mangle {");
         push(rules, "        type route hook output priority mangle - 5; policy accept;");
-        push(rules, "        meta mark { 100, 255 } counter return"); // 放行 Sing-box 自身发出的 UDP
+        push(rules, sprintf("        meta mark { %s, 255 } counter return", self_mark)); // 放行 Sing-box 自身发出的 UDP
         push(rules, "        meta l4proto udp jump process_udp_output");
         push(rules, "    }");
 
@@ -140,14 +144,13 @@ function build_firewall(trace_id) {
         if (ip4_direct) push(rules, "        ip saddr " + ip4_direct + " counter return");
         push(rules, "        meta l4proto udp ip daddr @local_ipv4 counter return");
         push(rules, "        meta l4proto udp ip6 daddr @local_ipv6 counter return");
-        if (mac_global) push(rules, "        ether saddr " + mac_global + " meta mark set 101 tproxy ip to 127.0.0.1:" + tproxy_port + " counter accept");
-        if (ip4_global) push(rules, "        ip saddr " + ip4_global + " meta mark set 101 tproxy ip to 127.0.0.1:" + tproxy_port + " counter accept");
+        if (mac_global) push(rules, sprintf("        ether saddr %s meta mark set %s tproxy ip to 127.0.0.1:%s counter accept", mac_global, tproxy_mark, tproxy_port));
+        if (ip4_global) push(rules, sprintf("        ip saddr %s meta mark set %s tproxy ip to 127.0.0.1:%s counter accept", ip4_global, tproxy_mark, tproxy_port));
         push(rules, "        meta l4proto udp ip daddr @china_ipv4 counter return");
         push(rules, "        meta l4proto udp ip6 daddr @china_ipv6 counter return");
         
-        // 🚨 这里允许使用 tproxy，因为是 PREROUTING 链
-        push(rules, "        meta l4proto udp meta mark set 101 tproxy ip to 127.0.0.1:" + tproxy_port + " counter accept");
-        push(rules, "        meta l4proto udp meta mark set 101 tproxy ip6 to [::1]:" + tproxy_port + " counter accept");
+        push(rules, sprintf("        meta l4proto udp meta mark set %s tproxy ip to 127.0.0.1:%s counter accept", tproxy_mark, tproxy_port));
+        push(rules, sprintf("        meta l4proto udp meta mark set %s tproxy ip6 to [::1]:%s counter accept", tproxy_mark, tproxy_port));
         push(rules, "    }");
 
         // --- 子链：OUTPUT 的 UDP (禁止 tproxy，只允许打标) ---
@@ -156,12 +159,11 @@ function build_firewall(trace_id) {
         if (ip4_direct) push(rules, "        ip saddr " + ip4_direct + " counter return");
         push(rules, "        meta l4proto udp ip daddr @local_ipv4 counter return");
         push(rules, "        meta l4proto udp ip6 daddr @local_ipv6 counter return");
-        if (ip4_global) push(rules, "        ip saddr " + ip4_global + " meta mark set 101 counter accept");
+        if (ip4_global) push(rules, sprintf("        ip saddr %s meta mark set %s counter accept", ip4_global, tproxy_mark));
         push(rules, "        meta l4proto udp ip daddr @china_ipv4 counter return");
         push(rules, "        meta l4proto udp ip6 daddr @china_ipv6 counter return");
         
-        // 🚨 核心修复：这里只打 101 标签，绝不使用 tproxy 关键字！
-        push(rules, "        meta l4proto udp meta mark set 101 counter accept comment \"FlowProxy: Local UDP Mark\"");
+        push(rules, sprintf("        meta l4proto udp meta mark set %s counter accept comment \"FlowProxy: Local UDP Mark\"", tproxy_mark));
         push(rules, "    }");
 
         push(rules, "}");

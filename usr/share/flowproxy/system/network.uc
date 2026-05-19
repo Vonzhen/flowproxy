@@ -20,12 +20,6 @@ import { log } from 'flowproxy.core.logger';
 // 3. [跨模块战略会师] 导入全新落成的防火墙动态编译零件
 import { build_firewall } from 'flowproxy.system.firewall';
 
-const ROUTE_TABLES = {
-    SELF: 100,
-    TPROXY: 101, // UDP TProxy 专属策略路由表
-    TUN: 102     // 历史残留清洗靶向
-};
-
 /**
  * 物理卸载所有的策略路由规则、历史残留虚拟网卡与主权防火墙（保证绝对的幂等性）
  * @param {string} trace_id - 贯穿始终的链路 ID
@@ -34,12 +28,10 @@ function teardown(trace_id) {
     try {
         log(trace_id, 'INFO', 'NETWORK', 'Executing full cryptographic network teardown...');
 
-        // [维度一：主权防火墙清洗] 
-        // 🚨 架构极致优雅体现：由于使用了独立主权 table，只需整表物理摧毁，一秒钟断掉所有前置拦截，绝无残留
-        log(trace_id, 'INFO', 'NETWORK', 'Purging independent sovereign firewall table...');
+        // 1. [主权防火墙清洗] 物理摧毁整表，保证前置拦截无残留
         ExecSafe(BIN.SH, ['-c', 'nft delete table inet flowproxy 2>/dev/null || true'], null, trace_id);
 
-        // [维度二：历史迁移安全护航] 若系统存在旧时代 TUN 残留网卡，在此处执行幂等清洗
+        // 2. [历史迁移安全护航] 幂等清洗旧时代 TUN 残留网卡
         let net_res = ExecSafe(BIN.SH, ['-c', 'ls /sys/class/net/ 2>/dev/null | grep "^singtun"'], null, trace_id);
         if (net_res.ok && net_res.data && net_res.data.stdout) {
             let tun_devices = split(net_res.data.stdout, '\n');
@@ -53,18 +45,30 @@ function teardown(trace_id) {
             }
         }
 
-        // [维度三：策略路由全量清洗] 将 SELF, TPROXY, TUN 相关的游离态规则与路由表彻底物理拔除
-        let tables = [ROUTE_TABLES.SELF, ROUTE_TABLES.TPROXY, ROUTE_TABLES.TUN];
-        for (let i = 0; i < length(tables); i++) {
-            let tid = sprintf("%d", tables[i]);
-            
-            // 核心安全策略：使用 while 循环彻底清空可能由于多次异常重启叠加的同名规则
-            let sh_clean_v4 = sprintf('while ip rule del table %s 2>/dev/null; do :; done; ip route flush table %s 2>/dev/null || true', tid, tid);
-            let sh_clean_v6 = sprintf('while ip -6 rule del table %s 2>/dev/null; do :; done; ip -6 route flush table %s 2>/dev/null || true', tid, tid);
+        // 3. [策略路由精确清洗] 🚨 拒绝核弹式清理！只删除我们明确打了 mark 的策略规则
+        let u = cursor();
+        u.load("flowproxy");
+        let tproxy_mark = u.get("flowproxy", "infra", "tproxy_mark") || "101";
+        let tun_mark = u.get("flowproxy", "infra", "tun_mark") || "102";
+        let self_mark = u.get("flowproxy", "infra", "self_mark") || "100";
+        
+        let marks = [tproxy_mark, tun_mark, self_mark];
+        for (let i = 0; i < length(marks); i++) {
+            let m = marks[i];
+            // 🚨 架构修复：严格使用 fwmark <ID> 匹配删除，绝不误伤 mwan3 或 sqm 等同表友军！
+            let sh_clean_v4 = sprintf('while ip rule del fwmark %s table %s 2>/dev/null; do :; done; ip route flush table %s 2>/dev/null || true', m, m, m);
+            let sh_clean_v6 = sprintf('while ip -6 rule del fwmark %s table %s 2>/dev/null; do :; done; ip -6 route flush table %s 2>/dev/null || true', m, m, m);
             
             ExecSafe(BIN.SH, ['-c', sh_clean_v4], null, trace_id);
             ExecSafe(BIN.SH, ['-c', sh_clean_v6], null, trace_id);
         }
+
+        // 4. [深度 GC (Garbage Collection)] 🚨 清剿幽灵残留，恢复纯净物理态
+        log(trace_id, 'INFO', 'NETWORK', 'Executing depth GC: Purging orphaned sockets and states...');
+        // 强杀可能游离的孤儿进程 (procd 托管外的幽灵)
+        ExecSafe(BIN.SH, ['-c', 'killall -9 sing-box 2>/dev/null || true'], null, trace_id);
+        // 清理所有遗留的 UNIX Socket 与运行状态残骸
+        ExecSafe(BIN.SH, ['-c', 'rm -f /var/run/flowproxy/*.socket /var/run/flowproxy/*.sock /var/run/flowproxy/*.state 2>/dev/null || true'], null, trace_id);
         
         return Success(true, 200, trace_id);
         
@@ -102,19 +106,59 @@ function setup(trace_id) {
         let u = cursor();
         u.load("flowproxy");
         let ipv6_support = u.get("flowproxy", "config", "ipv6_support") === '1';
+        let tproxy_mark = u.get("flowproxy", "infra", "tproxy_mark") || "101";
 
-        // 3. 策略路由铺路：原子装配 UDP TProxy 本地环回策略路由表 (Table 101)
+        // 3. 策略路由铺路：原子装配 UDP TProxy 本地环回策略路由表
         if (has_tproxy) {
-            log(trace_id, 'INFO', 'NETWORK', 'Assembling Linux policy routing for UDP TProxy (Table 101)...');
+            log(trace_id, 'INFO', 'NETWORK', 'Assembling Linux policy routing for UDP TProxy...');
+            
+            let res;
+            let t_mark = tproxy_mark; 
+            
+            // [诊断式重构]：使用 sh -c 并捕获真实报错 (2>&1)，彻底查清底层为何拒绝执行
             
             // IPv4 策略路由注入
-            ExecSafe(BIN.IP, ['rule', 'add', 'fwmark', sprintf("%d", ROUTE_TABLES.TPROXY), 'table', sprintf("%d", ROUTE_TABLES.TPROXY)], null, trace_id);
-            ExecSafe(BIN.IP, ['route', 'add', 'local', '0.0.0.0/0', 'dev', 'lo', 'table', sprintf("%d", ROUTE_TABLES.TPROXY)], null, trace_id);
+            ExecSafe(BIN.SH, ['-c', sprintf("ip rule del fwmark %s table %s 2>/dev/null", t_mark, t_mark)], null, trace_id); // 静默清理残留
+            let cmd_rule_v4 = sprintf("ip rule add fwmark %s table %s 2>&1", t_mark, t_mark);
+            res = ExecSafe(BIN.SH, ['-c', cmd_rule_v4], null, trace_id);
+            if (!res.ok || (res.data && index(res.data.stdout || "", "RTNETLINK") !== -1)) {
+                let err_msg = (res.data && res.data.stdout) ? res.data.stdout : (res.detail || "Unknown shell error");
+                log(trace_id, 'CRIT', 'NETWORK', 'IPv4 ip rule setup failed. RAW ERROR: ' + err_msg);
+                teardown(trace_id);
+                return Fail(ERR.E_SYSTEM_BUSY, "IPv4 ip rule error: " + err_msg, trace_id);
+            }
+            
+            ExecSafe(BIN.SH, ['-c', sprintf("ip route flush table %s 2>/dev/null", t_mark)], null, trace_id);
+            let cmd_route_v4 = sprintf("ip route add local 0.0.0.0/0 dev lo table %s 2>&1", t_mark);
+            res = ExecSafe(BIN.SH, ['-c', cmd_route_v4], null, trace_id);
+            if (!res.ok || (res.data && index(res.data.stdout || "", "RTNETLINK") !== -1)) {
+                let err_msg = (res.data && res.data.stdout) ? res.data.stdout : (res.detail || "Unknown shell error");
+                log(trace_id, 'CRIT', 'NETWORK', 'IPv4 ip route setup failed. RAW ERROR: ' + err_msg);
+                teardown(trace_id);
+                return Fail(ERR.E_SYSTEM_BUSY, "IPv4 ip route error: " + err_msg, trace_id);
+            }
             
             // IPv6 策略路由注入
             if (ipv6_support) {
-                ExecSafe(BIN.IP, ['-6', 'rule', 'add', 'fwmark', sprintf("%d", ROUTE_TABLES.TPROXY), 'table', sprintf("%d", ROUTE_TABLES.TPROXY)], null, trace_id);
-                ExecSafe(BIN.IP, ['-6', 'route', 'add', 'local', '::/0', 'dev', 'lo', 'table', sprintf("%d", ROUTE_TABLES.TPROXY)], null, trace_id);
+                ExecSafe(BIN.SH, ['-c', sprintf("ip -6 rule del fwmark %s table %s 2>/dev/null", t_mark, t_mark)], null, trace_id);
+                let cmd_rule_v6 = sprintf("ip -6 rule add fwmark %s table %s 2>&1", t_mark, t_mark);
+                res = ExecSafe(BIN.SH, ['-c', cmd_rule_v6], null, trace_id);
+                if (!res.ok || (res.data && index(res.data.stdout || "", "RTNETLINK") !== -1)) {
+                    let err_msg = (res.data && res.data.stdout) ? res.data.stdout : (res.detail || "Unknown shell error");
+                    log(trace_id, 'CRIT', 'NETWORK', 'IPv6 ip rule setup failed. RAW ERROR: ' + err_msg);
+                    teardown(trace_id);
+                    return Fail(ERR.E_SYSTEM_BUSY, "IPv6 ip rule error: " + err_msg, trace_id);
+                }
+
+                ExecSafe(BIN.SH, ['-c', sprintf("ip -6 route flush table %s 2>/dev/null", t_mark)], null, trace_id);
+                let cmd_route_v6 = sprintf("ip -6 route add local ::/0 dev lo table %s 2>&1", t_mark);
+                res = ExecSafe(BIN.SH, ['-c', cmd_route_v6], null, trace_id);
+                if (!res.ok || (res.data && index(res.data.stdout || "", "RTNETLINK") !== -1)) {
+                    let err_msg = (res.data && res.data.stdout) ? res.data.stdout : (res.detail || "Unknown shell error");
+                    log(trace_id, 'CRIT', 'NETWORK', 'IPv6 ip route setup failed. RAW ERROR: ' + err_msg);
+                    teardown(trace_id);
+                    return Fail(ERR.E_SYSTEM_BUSY, "IPv6 ip route error: " + err_msg, trace_id);
+                }
             }
         }
 
@@ -122,7 +166,9 @@ function setup(trace_id) {
         let fw_compile_res = build_firewall(trace_id);
         if (!fw_compile_res.ok) {
             log(trace_id, 'CRIT', 'NETWORK', 'Firewall compilation pipe broken. Aborting kernel injection.');
-            return fw_compile_res; // 阻断式异常熔断，回传 Fail 协议
+            // 🚨 新增：即使是编译失败，也要执行 teardown 扫尾，把前面步骤 3 可能已经装好的 ip rule 清掉
+            teardown(trace_id);
+            return fw_compile_res; 
         }
 
         // 5. 🔥 终极合围：将编译完毕的独立主权防火墙一次性原子级灌入 Linux 内核

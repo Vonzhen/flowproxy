@@ -9,6 +9,7 @@
 'use strict';
 
 // 🚨 铁律 3: 绝对命名空间寻址
+import { cursor } from 'uci';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
 import { log } from 'flowproxy.core.logger';
@@ -46,11 +47,17 @@ const Adapter = {
         log(trace_id, 'INFO', 'ADAPTER', 'Translating FlowModel to Sing-box JSON...');
 
         try {
-            // ⭐ 协议对齐：防御性边界检查，透传 trace_id
+            // ⭐ 协议对齐：防御性边界检查
             if (!flow_model || type(flow_model) !== 'object') {
                 log(trace_id, 'CRIT', 'ADAPTER', 'Invalid flow_model input object.');
                 return Fail(ERR.E_CONFIG_FAULT, "Adapter Error: Invalid flow_model input", trace_id);
             }
+
+            let u = cursor();
+            u.load('flowproxy');
+            // 🚨 安全硬化：获取是否允许局域网连接意图。未开启则强行收敛至本机环回地址
+            let allow_lan = u.get('flowproxy', 'config', 'allow_lan') === '1';
+            let safe_listen_addr = allow_lan ? '::' : '127.0.0.1';
 
             let config = {};
 
@@ -78,6 +85,14 @@ const Adapter = {
             }
 
             config.inbounds = (type(flow_model.inbounds) === 'array') ? flow_model.inbounds : [];
+            
+            // 🚨 收敛接管面：遍历入站节点，对高危端口实施物理隔离
+            for (let i = 0; i < length(config.inbounds); i++) {
+                if (config.inbounds[i].tag === 'mixed-in') {
+                    log(trace_id, 'INFO', 'ADAPTER', sprintf('Hardening mixed-in exposure: binding to %s', safe_listen_addr));
+                    config.inbounds[i].listen = safe_listen_addr;
+                }
+            }
 
             let final_outbounds = [];
             if (type(flow_model.outbounds) === 'array') {
@@ -102,16 +117,14 @@ const Adapter = {
 
             if (flow_model.experimental) config.experimental = flow_model.experimental;
 
-            // 最后一步：对整个 config 树进行终极清洗，剥离所有 null，产出完美 JSON
+            // 终极清洗：剥离所有 null，产出完美 JSON
             let final_json = sprintf("%.J", clean_obj(config));
 
             log(trace_id, 'INFO', 'ADAPTER', 'Translation complete. JSON generated successfully.');
 
-            // ⭐ 协议对齐：成功后返回标准 Success 包装体，透传状态码与 trace_id
             return Success(final_json, 200, trace_id);
 
         } catch(e) {
-            // 🚨 铁律 6：防爆对齐，即使发生引擎级的拼写/类型越界，也安全抛出标准字典异常，防止主线程雪崩
             let err_str = "" + e;
             log(trace_id, 'CRIT', 'ADAPTER', 'Translation Crash: ' + err_str);
             return Fail(ERR.E_CONFIG_FAULT, "Adapter Translation Exception: " + err_str, trace_id);

@@ -26,7 +26,8 @@ const PATH = {
     RULESET:  "/etc/flowproxy/ruleset",                // [Category A] 规则集存放目录
     PANELS:   "/www/zashboard",                        // [Category A] 前端面板部署物理路径
     RUN_JSON: "/var/run/flowproxy/sing-box-run.json",  // [Category A] 最终供给内核的 JSON
-    FIREWALL_NFT: "/var/run/flowproxy/firewall.nft"    // [Category A] 防火墙编译图纸物理位置
+    FIREWALL_NFT: "/var/run/flowproxy/firewall.nft",   // [Category A] 防火墙编译图纸物理位置
+    LOG_ARCHIVE: '/overlay/log/flowproxy_archive'      // [Category A] 合法的归档坐标
 };
 
 /**

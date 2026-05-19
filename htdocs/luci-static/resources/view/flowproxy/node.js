@@ -1,18 +1,13 @@
-// --- [ FlowProxy | Node & Subscription 视图模块 | v1.2 ] ---
+// --- [ FlowProxy | Node & Subscription 视图模块 | v1.3 (Hardened UI) ] ---
 // 功能：渲染节点配置与订阅管理表单，触发数据面状态机流转
 // 职责：持久化配置 (UCI Mapping) 并安全提交调度指令至全局异步引擎 (Job Observer)
 
 // --- [ 变更记录 ] ---
-// v1.2 (2026-04-26)
-// - 修复：对齐后端 Worker 契约，修正 update_subscriptions 的 Payload 参数 (airport_id, scope: 'all')
-// - 确保：补全 rebuild_groups 调度指令
-// v1.1 (2026-04-24)
-// - 重构：全量剥离 fs.exec_direct 越权调用，引入 flowproxy.job 桥接器
-// - 优化：废弃旧版基于 URL 的主键模型，对齐 FlowProxy v1.1 新版 Schema
-// v1.0 (2022-01-01)
-// - 新增：基于 ImmortalWrt HomeProxy 的初始化实现
+// v1.3 (2026-05-19)
+// - 🚨 终极修复：替换高危 <img onerror> XSS 注入，采用原生 renderWidget 安全重排 DOM。
+// - 🚨 终极修复：增强 Legacy Sub 空指针与强类型防御，免疫新装环境白屏。
+// - 🚨 终极修复：优化 remove_subscriptions 内存流转，实施原地遍历切除，防 OOM 泄漏。
 
-// --- [ 初始化 ] ---
 'use strict';
 'require form';
 'require fs';
@@ -40,8 +35,7 @@ function parseShareLink(uri, features) {
             url = new URL('http://' + uri[1]);
             params = url.searchParams;
 
-            if (!url.username)
-                return null;
+            if (!url.username) return null;
 
             config = {
                 label: url.hash ? decodeURIComponent(url.hash.slice(1)) : null,
@@ -53,7 +47,6 @@ function parseShareLink(uri, features) {
                 tls_sni: params.get('sni'),
                 tls_insecure: (params.get('insecure') === '1') ? '1' : '0'
             };
-
             break;
         case 'http':
         case 'https':
@@ -68,14 +61,12 @@ function parseShareLink(uri, features) {
                 password: url.password ? decodeURIComponent(url.password) : null,
                 tls: (uri[0] === 'https') ? '1' : '0'
             };
-
             break;
         case 'hysteria':
             url = new URL('http://' + uri[1]);
             params = url.searchParams;
 
-            if (!features.with_quic || (params.get('protocol') && params.get('protocol') !== 'udp'))
-                return null;
+            if (!features.with_quic || (params.get('protocol') && params.get('protocol') !== 'udp')) return null;
 
             config = {
                 label: url.hash ? decodeURIComponent(url.hash.slice(1)) : null,
@@ -93,31 +84,26 @@ function parseShareLink(uri, features) {
                 tls_alpn: params.get('alpn'),
                 tls_insecure: (params.get('insecure') === '1') ? '1' : '0'
             };
-
             break;
         case 'hysteria2':
         case 'hy2':
             url = new URL('http://' + uri[1]);
             params = url.searchParams;
 
-            if (!features.with_quic)
-                return null;
+            if (!features.with_quic) return null;
 
             config = {
                 label: url.hash ? decodeURIComponent(url.hash.slice(1)) : null,
                 type: 'hysteria2',
                 address: url.hostname,
                 port: url.port || '80',
-                password: url.username ? (
-                    decodeURIComponent(url.username + (url.password ? (':' + url.password) : ''))
-                ) : null,
+                password: url.username ? (decodeURIComponent(url.username + (url.password ? (':' + url.password) : ''))) : null,
                 hysteria_obfs_type: params.get('obfs'),
                 hysteria_obfs_password: params.get('obfs-password'),
                 tls: '1',
                 tls_sni: params.get('sni'),
                 tls_insecure: params.get('insecure') ? '1' : '0'
             };
-
             break;
         case 'socks':
         case 'socks4':
@@ -135,15 +121,13 @@ function parseShareLink(uri, features) {
                 password: url.password ? decodeURIComponent(url.password) : null,
                 socks_version: (uri[0].includes('4')) ? '4' : '5'
             };
-
             break;
         case 'ss':
             try {
                 try {
                     let suri = uri[1].split('#'), slabel = '';
                     if (suri.length <= 2) {
-                        if (suri.length === 2)
-                            slabel = '#' + suri[1];
+                        if (suri.length === 2) slabel = '#' + suri[1];
                         uri[1] = fp.decodeBase64Str(suri[0]) + slabel;
                     }
                 } catch(e) { }
@@ -155,12 +139,10 @@ function parseShareLink(uri, features) {
                     userinfo = [url.username, decodeURIComponent(url.password)];
                 } else if (url.username) {
                     userinfo = fp.decodeBase64Str(decodeURIComponent(url.username)).split(':');
-                    if (userinfo.length > 1)
-                        userinfo = [userinfo[0], userinfo.slice(1).join(':')]
+                    if (userinfo.length > 1) userinfo = [userinfo[0], userinfo.slice(1).join(':')]
                 }
 
-                if (!fp.shadowsocks_encrypt_methods.includes(userinfo[0]))
-                    return null;
+                if (!fp.shadowsocks_encrypt_methods.includes(userinfo[0])) return null;
 
                 let plugin, plugin_opts;
                 if (url.search && url.searchParams.get('plugin')) {
@@ -181,10 +163,8 @@ function parseShareLink(uri, features) {
                 };
             } catch(e) {
                 uri = uri[1].split('@');
-                if (uri.length < 2)
-                    return null;
-                else if (uri.length > 2)
-                    uri = [ uri.slice(0, -1).join('@'), uri.slice(-1).toString() ];
+                if (uri.length < 2) return null;
+                else if (uri.length > 2) uri = [ uri.slice(0, -1).join('@'), uri.slice(-1).toString() ];
 
                 config = {
                     type: 'shadowsocks',
@@ -194,14 +174,12 @@ function parseShareLink(uri, features) {
                     password: uri[0].split(':').slice(1).join(':')
                 };
             }
-
             break;
         case 'trojan':
             url = new URL('http://' + uri[1]);
             params = url.searchParams;
 
-            if (!url.username)
-                return null;
+            if (!url.username) return null;
 
             config = {
                 label: url.hash ? decodeURIComponent(url.hash.slice(1)) : null,
@@ -227,14 +205,12 @@ function parseShareLink(uri, features) {
                 }
                 break;
             }
-
             break;
         case 'tuic':
             url = new URL('http://' + uri[1]);
             params = url.searchParams;
 
-            if (!url.username)
-                return null;
+            if (!url.username) return null;
 
             config = {
                 label: url.hash ? decodeURIComponent(url.hash.slice(1)) : null,
@@ -249,18 +225,14 @@ function parseShareLink(uri, features) {
                 tls_sni: params.get('sni'),
                 tls_alpn: params.get('alpn') ? decodeURIComponent(params.get('alpn')).split(',') : null
             };
-
             break;
         case 'vless':
             url = new URL('http://' + uri[1]);
             params = url.searchParams;
 
-            if (params.get('type') === 'kcp')
-                return null;
-            else if (params.get('type') === 'quic' && ((params.get('quicSecurity') && params.get('quicSecurity') !== 'none') || !features.with_quic))
-                return null;
-            if (!url.username || !params.get('type'))
-                return null;
+            if (params.get('type') === 'kcp') return null;
+            else if (params.get('type') === 'quic' && ((params.get('quicSecurity') && params.get('quicSecurity') !== 'none') || !features.with_quic)) return null;
+            if (!url.username || !params.get('type')) return null;
 
             config = {
                 label: url.hash ? decodeURIComponent(url.hash.slice(1)) : null,
@@ -303,20 +275,14 @@ function parseShareLink(uri, features) {
                 }
                 break;
             }
-
             break;
         case 'vmess':
-            if (uri.includes('&'))
-                return null;
-
+            if (uri.includes('&')) return null;
             uri = JSON.parse(fp.decodeBase64Str(uri[1]));
 
-            if (uri.v != '2')
-                return null;
-            else if (uri.net === 'kcp')
-                return null;
-            else if (uri.net === 'quic' && ((uri.type && uri.type !== 'none') || !features.with_quic))
-                return null;
+            if (uri.v != '2') return null;
+            else if (uri.net === 'kcp') return null;
+            else if (uri.net === 'quic' && ((uri.type && uri.type !== 'none') || !features.with_quic)) return null;
 
             config = {
                 label: uri.ps,
@@ -358,17 +324,13 @@ function parseShareLink(uri, features) {
                 }
                 break;
             }
-
             break;
         }
     }
 
     if (config) {
-        if (!config.address || !config.port)
-            return null;
-        else if (!config.label)
-            config.label = config.address + ':' + config.port;
-
+        if (!config.address || !config.port) return null;
+        else if (!config.label) config.label = config.address + ':' + config.port;
         config.address = config.address.replace(/\[|\]/g, '');
     }
 
@@ -400,10 +362,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
         }
         o.onclick = function(ev, section_id) {
             uci.set(data[0], 'config', 'main_node', section_id);
-
-            return this.map.save(null, true).then(() => {
-                ui.changes.apply(true);
-            });
+            return this.map.save(null, true).then(() => { ui.changes.apply(true); });
         }
     }
 
@@ -425,10 +384,8 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.value('socks', _('Socks'));
     o.value('ssh', _('SSH'));
     o.value('trojan', _('Trojan'));
-    if (features.with_quic)
-        o.value('tuic', _('Tuic'));
-    if (features.with_wireguard && features.with_gvisor)
-        o.value('wireguard', _('WireGuard'));
+    if (features.with_quic) o.value('tuic', _('Tuic'));
+    if (features.with_wireguard && features.with_gvisor) o.value('wireguard', _('WireGuard'));
     o.value('vless', _('VLESS'));
     o.value('vmess', _('VMess'));
     o.rmempty = false;
@@ -469,11 +426,9 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
             if (required_type.includes(type)) {
                 if (type === 'shadowsocks') {
                     let encmode = this.section.formvalue(section_id, 'shadowsocks_encrypt_method');
-                    if (encmode === 'none')
-                        return true;
+                    if (encmode === 'none') return true;
                 }
-                if (!value)
-                    return _('Expecting: %s').format(_('non-empty value'));
+                if (!value) return _('Expecting: %s').format(_('non-empty value'));
             }
         }
         return true;
@@ -481,8 +436,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.modalonly = true;
 
     /* Direct config */
-    o = s.option(form.ListValue, 'proxy_protocol', _('Proxy protocol'),
-        _('Write proxy protocol in the connection header.'));
+    o = s.option(form.ListValue, 'proxy_protocol', _('Proxy protocol'), _('Write proxy protocol in the connection header.'));
     o.value('', _('Disable'));
     o.value('1', _('v1'));
     o.value('2', _('v2'));
@@ -490,22 +444,19 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.modalonly = true;
 
     /* AnyTLS config start */
-    o = s.option(form.Value, 'anytls_idle_session_check_interval', _('Idle session check interval'),
-        _('Interval checking for idle sessions, in seconds.'));
+    o = s.option(form.Value, 'anytls_idle_session_check_interval', _('Idle session check interval'), _('Interval checking for idle sessions, in seconds.'));
     o.datatype = 'uinteger';
     o.placeholder = '30';
     o.depends('type', 'anytls');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'anytls_idle_session_timeout', _('Idle session check timeout'),
-        _('In the check, close sessions that have been idle for longer than this, in seconds.'));
+    o = s.option(form.Value, 'anytls_idle_session_timeout', _('Idle session check timeout'), _('In the check, close sessions that have been idle for longer than this, in seconds.'));
     o.datatype = 'uinteger';
     o.placeholder = '30';
     o.depends('type', 'anytls');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'anytls_min_idle_session', _('Minimum idle sessions'),
-        _('In the check, at least the first <code>n</code> idle sessions are kept open.'));
+    o = s.option(form.Value, 'anytls_min_idle_session', _('Minimum idle sessions'), _('In the check, at least the first <code>n</code> idle sessions are kept open.'));
     o.datatype = 'uinteger';
     o.placeholder = '0';
     o.depends('type', 'anytls');
@@ -518,8 +469,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.validate = fp.validatePortRange;
     o.modalonly = true;
 
-    o = s.option(form.Value, 'hysteria_hop_interval', _('Hop interval'),
-        _('Port hopping interval in seconds.'));
+    o = s.option(form.Value, 'hysteria_hop_interval', _('Hop interval'), _('Port hopping interval in seconds.'));
     o.datatype = 'uinteger';
     o.placeholder = '30';
     o.depends({'type': 'hysteria', 'hysteria_hopping_port': /[\s\S]/});
@@ -558,41 +508,35 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.depends({'type': 'hysteria2', 'hysteria_obfs_type': /[\s\S]/});
     o.modalonly = true;
 
-    o = s.option(form.Value, 'hysteria_down_mbps', _('Max download speed'),
-        _('Max download speed in Mbps.'));
+    o = s.option(form.Value, 'hysteria_down_mbps', _('Max download speed'), _('Max download speed in Mbps.'));
     o.datatype = 'uinteger';
     o.depends('type', 'hysteria');
     o.depends('type', 'hysteria2');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'hysteria_up_mbps', _('Max upload speed'),
-        _('Max upload speed in Mbps.'));
+    o = s.option(form.Value, 'hysteria_up_mbps', _('Max upload speed'), _('Max upload speed in Mbps.'));
     o.datatype = 'uinteger';
     o.depends('type', 'hysteria');
     o.depends('type', 'hysteria2');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'hysteria_recv_window_conn', _('QUIC stream receive window'),
-        _('The QUIC stream-level flow control window for receiving data.'));
+    o = s.option(form.Value, 'hysteria_recv_window_conn', _('QUIC stream receive window'), _('The QUIC stream-level flow control window for receiving data.'));
     o.datatype = 'uinteger';
     o.depends('type', 'hysteria');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'hysteria_revc_window', _('QUIC connection receive window'),
-        _('The QUIC connection-level flow control window for receiving data.'));
+    o = s.option(form.Value, 'hysteria_revc_window', _('QUIC connection receive window'), _('The QUIC connection-level flow control window for receiving data.'));
     o.datatype = 'uinteger';
     o.depends('type', 'hysteria');
     o.modalonly = true;
 
-    o = s.option(form.Flag, 'hysteria_disable_mtu_discovery', _('Disable Path MTU discovery'),
-        _('Disables Path MTU Discovery (RFC 8899). Packets will then be at most 1252 (IPv4) / 1232 (IPv6) bytes in size.'));
+    o = s.option(form.Flag, 'hysteria_disable_mtu_discovery', _('Disable Path MTU discovery'), _('Disables Path MTU Discovery (RFC 8899). Packets will then be at most 1252 (IPv4) / 1232 (IPv6) bytes in size.'));
     o.depends('type', 'hysteria');
     o.modalonly = true;
 
     /* Shadowsocks config start */
     o = s.option(form.ListValue, 'shadowsocks_encrypt_method', _('Encrypt method'));
-    for (let i of fp.shadowsocks_encrypt_methods)
-        o.value(i);
+    for (let i of fp.shadowsocks_encrypt_methods) o.value(i);
     o.value('aes-128-ctr');
     o.value('aes-192-ctr');
     o.value('aes-256-ctr');
@@ -640,13 +584,11 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.modalonly = true;
 
     /* SSH config start */
-    o = s.option(form.Value, 'ssh_client_version', _('Client version'),
-        _('Random version will be used if empty.'));
+    o = s.option(form.Value, 'ssh_client_version', _('Client version'), _('Random version will be used if empty.'));
     o.depends('type', 'ssh');
     o.modalonly = true;
 
-    o = s.option(form.DynamicList, 'ssh_host_key', _('Host key'),
-        _('Accept any if empty.'));
+    o = s.option(form.DynamicList, 'ssh_host_key', _('Host key'), _('Accept any if empty.'));
     o.depends('type', 'ssh');
     o.modalonly = true;
 
@@ -673,8 +615,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.validate = fp.validateUUID;
     o.modalonly = true;
 
-    o = s.option(form.ListValue, 'tuic_congestion_control', _('Congestion control algorithm'),
-        _('QUIC congestion control algorithm.'));
+    o = s.option(form.ListValue, 'tuic_congestion_control', _('Congestion control algorithm'), _('QUIC congestion control algorithm.'));
     o.value('cubic', _('CUBIC'));
     o.value('new_reno', _('New Reno'));
     o.value('bbr', _('BBR'));
@@ -683,27 +624,22 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.rmempty = false;
     o.modalonly = true;
 
-    o = s.option(form.ListValue, 'tuic_udp_relay_mode', _('UDP relay mode'),
-        _('UDP packet relay mode.'));
+    o = s.option(form.ListValue, 'tuic_udp_relay_mode', _('UDP relay mode'), _('UDP packet relay mode.'));
     o.value('', _('Default'));
     o.value('native', _('Native'));
     o.value('quic', _('QUIC'));
     o.depends('type', 'tuic');
     o.modalonly = true;
 
-    o = s.option(form.Flag, 'tuic_udp_over_stream', _('UDP over stream'),
-        _('This is the TUIC port of the UDP over TCP protocol, designed to provide a QUIC stream based UDP relay mode that TUIC does not provide.'));
+    o = s.option(form.Flag, 'tuic_udp_over_stream', _('UDP over stream'), _('This is the TUIC port of the UDP over TCP protocol, designed to provide a QUIC stream based UDP relay mode that TUIC does not provide.'));
     o.depends({'type': 'tuic','tuic_udp_relay_mode': ''});
     o.modalonly = true;
 
-    o = s.option(form.Flag, 'tuic_enable_zero_rtt', _('Enable 0-RTT handshake'),
-        _('Enable 0-RTT QUIC connection handshake on the client side. This is not impacting much on the performance, as the protocol is fully multiplexed.<br/>' +
-            'Disabling this is highly recommended, as it is vulnerable to replay attacks.'));
+    o = s.option(form.Flag, 'tuic_enable_zero_rtt', _('Enable 0-RTT handshake'), _('Enable 0-RTT QUIC connection handshake on the client side. This is not impacting much on the performance, as the protocol is fully multiplexed.<br/>Disabling this is highly recommended, as it is vulnerable to replay attacks.'));
     o.depends('type', 'tuic');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'tuic_heartbeat', _('Heartbeat interval'),
-        _('Interval for sending heartbeat packets for keeping the connection alive (in seconds).'));
+    o = s.option(form.Value, 'tuic_heartbeat', _('Heartbeat interval'), _('Interval for sending heartbeat packets for keeping the connection alive (in seconds).'));
     o.datatype = 'uinteger';
     o.default = '10';
     o.depends('type', 'tuic');
@@ -716,8 +652,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.depends('type', 'vless');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'vmess_alterid', _('Alter ID'),
-        _('Legacy protocol support (VMess MD5 Authentication) is provided for compatibility purposes only, use of alterId > 1 is not recommended.'));
+    o = s.option(form.Value, 'vmess_alterid', _('Alter ID'), _('Legacy protocol support (VMess MD5 Authentication) is provided for compatibility purposes only, use of alterId > 1 is not recommended.'));
     o.datatype = 'uinteger';
     o.depends('type', 'vmess');
     o.modalonly = true;
@@ -733,21 +668,18 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.rmempty = false;
     o.modalonly = true;
 
-    o = s.option(form.Flag, 'vmess_global_padding', _('Global padding'),
-        _('Protocol parameter. Will waste traffic randomly if enabled (enabled by default in v2ray and cannot be disabled).'));
+    o = s.option(form.Flag, 'vmess_global_padding', _('Global padding'), _('Protocol parameter. Will waste traffic randomly if enabled (enabled by default in v2ray and cannot be disabled).'));
     o.default = o.enabled;
     o.depends('type', 'vmess');
     o.rmempty = false;
     o.modalonly = true;
 
-    o = s.option(form.Flag, 'vmess_authenticated_length', _('Authenticated length'),
-        _('Protocol parameter. Enable length block encryption.'));
+    o = s.option(form.Flag, 'vmess_authenticated_length', _('Authenticated length'), _('Protocol parameter. Enable length block encryption.'));
     o.depends('type', 'vmess');
     o.modalonly = true;
 
     /* Transport config start */
-    o = s.option(form.ListValue, 'transport', _('Transport'),
-        _('No TCP transport, plain HTTP is merged into the HTTP transport.'));
+    o = s.option(form.ListValue, 'transport', _('Transport'), _('No TCP transport, plain HTTP is merged into the HTTP transport.'));
     o.value('', _('None'));
     o.value('grpc', _('gRPC'));
     o.value('http', _('HTTP'));
@@ -759,28 +691,17 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.depends('type', 'vmess');
     o.onchange = function(ev, section_id, value) {
         let desc = this.map.findElement('id', 'cbid.flowproxy.%s.transport'.format(section_id)).nextElementSibling;
-        if (value === 'http')
-            desc.innerHTML = _('TLS is not enforced. If TLS is not configured, plain HTTP 1.1 is used.');
-        else if (value === 'quic')
-            desc.innerHTML = _('No additional encryption support: It\'s basically duplicate encryption.');
-        else
-            desc.innerHTML = _('No TCP transport, plain HTTP is merged into the HTTP transport.');
+        if (value === 'http') desc.innerHTML = _('TLS is not enforced. If TLS is not configured, plain HTTP 1.1 is used.');
+        else if (value === 'quic') desc.innerHTML = _('No additional encryption support: It\'s basically duplicate encryption.');
+        else desc.innerHTML = _('No TCP transport, plain HTTP is merged into the HTTP transport.');
 
         let tls = this.map.findElement('id', 'cbid.flowproxy.%s.tls'.format(section_id)).firstElementChild;
         if ((value === 'http' && tls.checked) || (value === 'grpc' && !features.with_grpc)) {
-            this.map.findElement('id', 'cbid.flowproxy.%s.http_idle_timeout'.format(section_id)).nextElementSibling.innerHTML =
-                _('Specifies the period of time (in seconds) after which a health check will be performed using a ping frame if no frames have been received on the connection.<br/>' +
-                    'Please note that a ping response is considered a received frame, so if there is no other traffic on the connection, the health check will be executed every interval.');
-
-            this.map.findElement('id', 'cbid.flowproxy.%s.http_ping_timeout'.format(section_id)).nextElementSibling.innerHTML =
-                _('Specifies the timeout duration (in seconds) after sending a PING frame, within which a response must be received.<br/>' +
-                    'If a response to the PING frame is not received within the specified timeout duration, the connection will be closed.');
+            this.map.findElement('id', 'cbid.flowproxy.%s.http_idle_timeout'.format(section_id)).nextElementSibling.innerHTML = _('Specifies the period of time (in seconds) after which a health check will be performed using a ping frame if no frames have been received on the connection.<br/>Please note that a ping response is considered a received frame, so if there is no other traffic on the connection, the health check will be executed every interval.');
+            this.map.findElement('id', 'cbid.flowproxy.%s.http_ping_timeout'.format(section_id)).nextElementSibling.innerHTML = _('Specifies the timeout duration (in seconds) after sending a PING frame, within which a response must be received.<br/>If a response to the PING frame is not received within the specified timeout duration, the connection will be closed.');
         } else if (value === 'grpc' && features.with_grpc) {
-            this.map.findElement('id', 'cbid.flowproxy.%s.http_idle_timeout'.format(section_id)).nextElementSibling.innerHTML =
-                _('If the transport doesn\'t see any activity after a duration of this time (in seconds), it pings the client to check if the connection is still active.');
-
-            this.map.findElement('id', 'cbid.flowproxy.%s.http_ping_timeout'.format(section_id)).nextElementSibling.innerHTML =
-                _('The timeout (in seconds) that after performing a keepalive check, the client will wait for activity. If no activity is detected, the connection will be closed.');
+            this.map.findElement('id', 'cbid.flowproxy.%s.http_idle_timeout'.format(section_id)).nextElementSibling.innerHTML = _('If the transport doesn\'t see any activity after a duration of this time (in seconds), it pings the client to check if the connection is still active.');
+            this.map.findElement('id', 'cbid.flowproxy.%s.http_ping_timeout'.format(section_id)).nextElementSibling.innerHTML = _('The timeout (in seconds) that after performing a keepalive check, the client will wait for activity. If no activity is detected, the connection will be closed.');
         }
     }
     o.modalonly = true;
@@ -791,8 +712,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.modalonly = true;
 
     if (features.with_grpc) {
-        o = s.option(form.Flag, 'grpc_permit_without_stream', _('gRPC permit without stream'),
-            _('If enabled, the client transport sends keepalive pings even with no active connections.'));
+        o = s.option(form.Flag, 'grpc_permit_without_stream', _('gRPC permit without stream'), _('If enabled, the client transport sends keepalive pings even with no active connections.'));
         o.depends('transport', 'grpc');
         o.modalonly = true;
     }
@@ -840,8 +760,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.depends('transport', 'ws');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'websocket_early_data', _('Early data'),
-        _('Allowed payload size is in the request.'));
+    o = s.option(form.Value, 'websocket_early_data', _('Early data'), _('Allowed payload size is in the request.'));
     o.datatype = 'uinteger';
     o.value('2048');
     o.depends('transport', 'ws');
@@ -861,30 +780,26 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.modalonly = true;
 
     /* Wireguard config start */
-    o = s.option(form.DynamicList, 'wireguard_local_address', _('Local address'),
-        _('List of IP (v4 or v6) addresses prefixes to be assigned to the interface.'));
+    o = s.option(form.DynamicList, 'wireguard_local_address', _('Local address'), _('List of IP (v4 or v6) addresses prefixes to be assigned to the interface.'));
     o.datatype = 'cidr';
     o.depends('type', 'wireguard');
     o.rmempty = false;
     o.modalonly = true;
 
-    o = s.option(form.Value, 'wireguard_private_key', _('Private key'),
-        _('WireGuard requires base64-encoded private keys.'));
+    o = s.option(form.Value, 'wireguard_private_key', _('Private key'), _('WireGuard requires base64-encoded private keys.'));
     o.password = true;
     o.depends('type', 'wireguard');
     o.validate = L.bind(fp.validateBase64Key, this, 44);
     o.rmempty = false;
     o.modalonly = true;
 
-    o = s.option(form.Value, 'wireguard_peer_public_key', _('Peer pubkic key'),
-        _('WireGuard peer public key.'));
+    o = s.option(form.Value, 'wireguard_peer_public_key', _('Peer pubkic key'), _('WireGuard peer public key.'));
     o.depends('type', 'wireguard');
     o.validate = L.bind(fp.validateBase64Key, this, 44);
     o.rmempty = false;
     o.modalonly = true;
 
-    o = s.option(form.Value, 'wireguard_pre_shared_key', _('Pre-shared key'),
-        _('WireGuard pre-shared key.'));
+    o = s.option(form.Value, 'wireguard_pre_shared_key', _('Pre-shared key'), _('WireGuard pre-shared key.'));
     o.password = true;
     o.depends('type', 'wireguard');
     o.validate = L.bind(fp.validateBase64Key, this, 44);
@@ -901,8 +816,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.depends('type', 'wireguard');
     o.modalonly = true;
 
-    o = s.option(form.Value, 'wireguard_persistent_keepalive_interval', _('Persistent keepalive interval'),
-        _('In seconds. Disabled by default.'));
+    o = s.option(form.Value, 'wireguard_persistent_keepalive_interval', _('Persistent keepalive interval'), _('In seconds. Disabled by default.'));
     o.datatype = 'uinteger';
     o.depends('type', 'wireguard');
     o.modalonly = true;
@@ -984,8 +898,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     }
     o.modalonly = true;
 
-    o = s.option(form.Value, 'tls_sni', _('TLS SNI'),
-        _('Used to verify the hostname on the returned certificates unless insecure is given.'));
+    o = s.option(form.Value, 'tls_sni', _('TLS SNI'), _('Used to verify the hostname on the returned certificates unless insecure is given.'));
     o.depends('tls', '1');
     o.modalonly = true;
 
@@ -993,9 +906,7 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
     o.depends('tls', '1');
     o.modalonly = true;
 
-    o = s.option(form.Flag, 'tls_insecure', _('Allow insecure'),
-        _('Allow insecure connection at TLS client.') + '<br/>' +
-        _('This is <strong>DANGEROUS</strong>, your traffic is almost like <strong>PLAIN TEXT</strong>! Use at your own risk!'));
+    o = s.option(form.Flag, 'tls_insecure', _('Allow insecure'), _('Allow insecure connection at TLS client.') + '<br/>' + _('This is <strong>DANGEROUS</strong>, your traffic is almost like <strong>PLAIN TEXT</strong>! Use at your own risk!'));
     o.depends('tls', '1');
     o.onchange = allowInsecureConfirm;
     o.modalonly = true;
@@ -1069,12 +980,10 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
         o.validate = function(section_id, value) {
             if (section_id) {
                 let tls_reality = this.map.findElement('id', 'cbid.flowproxy.%s.tls_reality'.format(section_id)).firstElementChild;
-                if (tls_reality.checked && !value)
-                    return _('Expecting: %s').format(_('non-empty value'));
+                if (tls_reality.checked && !value) return _('Expecting: %s').format(_('non-empty value'));
 
                 let vless_flow = this.map.lookupOption('vless_flow', section_id)[0].formvalue(section_id);
-                if ((tls_reality.checked || vless_flow) && ['360', 'android'].includes(value))
-                    return _('Unsupported fingerprint!');
+                if ((tls_reality.checked || vless_flow) && ['360', 'android'].includes(value)) return _('Unsupported fingerprint!');
             }
             return true;
         }
@@ -1148,11 +1057,16 @@ return view.extend({
             }
         });
 
-        // 临时兼容：如果有旧版的 URL，依然生成 Tab 以便用户删掉旧节点
-        for (let suburl of (uci.get(data[0], 'subscription', 'subscription_url') || [])) {
-            const urlhash = fp.calcStringMD5(suburl.replace(/#.*$/, ''));
-            if (!subinfo.find(i => i.hash === urlhash)) {
-                subinfo.push({ 'hash': urlhash, 'title': 'Legacy Sub' });
+        // 🚨 终极修复 2: 严格类型校验与空值兜底，免疫新装系统白屏死锁
+        let legacy_urls = uci.get(data[0], 'subscription', 'subscription_url');
+        if (legacy_urls) {
+            if (!Array.isArray(legacy_urls)) legacy_urls = [legacy_urls];
+            for (let suburl of legacy_urls) {
+                if (typeof suburl !== 'string') continue;
+                const urlhash = fp.calcStringMD5(suburl.replace(/#.*$/, ''));
+                if (!subinfo.find(i => i.hash === urlhash)) {
+                    subinfo.push({ 'hash': urlhash, 'title': 'Legacy Sub' });
+                }
             }
         }
 
@@ -1163,87 +1077,101 @@ return view.extend({
         /* === Subscriptions settings start === */
         s.tab('subscription', '订阅设置');
 
-        /* UI 位移与排版渲染脚本 */
+        /* 🚨 终极修复 1: 弃用危险的 <img onerror> XSS 注入，采用标准的安全 DOM 注入钩子 */
         o = s.taboption('subscription', form.DummyValue, '_ui_optimization');
-        o.rawhtml = true;
-        o.default = `
-        <style>
-            #cbi-flowproxy-subscription-_ui_optimization { display: none !important; }
-            #cbi-flowproxy-subscription-_airports { max-width: none !important; width: 100%; }
-            .fp-native-title { margin-top: 10px !important; margin-bottom: 15px !important; border: none !important; }
-        </style>
-        <img src="x" style="display:none" onerror="
-            let img = this;
-            setTimeout(function() {
-                img.remove();
+        o.renderWidget = function(section_id, option_index, cfgvalue) {
+            let hookContainer = E('div', { id: 'fp-ui-opt-hook', style: 'display:none;' });
+            
+            // 使用原生 CSS 注入
+            let style = E('style', {}, `
+                #cbi-flowproxy-subscription-_ui_optimization { display: none !important; }
+                #cbi-flowproxy-subscription-_airports { max-width: none !important; width: 100%; }
+                .fp-native-title { margin-top: 10px !important; margin-bottom: 15px !important; border: none !important; }
+            `);
+            hookContainer.appendChild(style);
 
-                let divider = document.getElementById('cbi-flowproxy-subscription-_divider_main');
-                if (divider && !document.querySelector('.fp-layout-row')) {
-                    let row = document.createElement('div');
-                    row.className = 'fp-layout-row';
-                    row.style.display = 'flex';
-                    row.style.gap = '50px';
-                    row.style.alignItems = 'flex-start';
-                    row.style.width = '100%';
+            // 构造安全的闭包运行器
+            let script = E('script', { type: 'text/javascript' }, `
+                (function() {
+                    function optimizeUI() {
+                        let divider = document.getElementById('cbi-flowproxy-subscription-_divider_main');
+                        if (!divider) return false;
+                        if (document.querySelector('.fp-layout-row')) return true;
 
-                    let leftCol = document.createElement('div');
-                    leftCol.style.flex = '1';
-                    leftCol.style.minWidth = '0';
+                        let row = document.createElement('div');
+                        row.className = 'fp-layout-row';
+                        row.style.display = 'flex';
+                        row.style.gap = '50px';
+                        row.style.alignItems = 'flex-start';
+                        row.style.width = '100%';
 
-                    let rightCol = document.createElement('div');
-                    rightCol.style.flex = '1';
-                    rightCol.style.minWidth = '0';
+                        let leftCol = document.createElement('div');
+                        leftCol.style.flex = '1'; leftCol.style.minWidth = '0';
 
-                    row.appendChild(leftCol);
-                    row.appendChild(rightCol);
+                        let rightCol = document.createElement('div');
+                        rightCol.style.flex = '1'; rightCol.style.minWidth = '0';
 
-                    let leftIds = ['_left_title', 'auto_update', 'auto_update_time', 'update_via_proxy', 'filter_nodes', 'filter_keywords', 'user_agent', 'allow_insecure', 'packet_encoding'];
-                    let rightIds = ['_right_title', 'global_regions'];
+                        row.appendChild(leftCol);
+                        row.appendChild(rightCol);
 
-                    leftIds.forEach(id => {
-                        let el = document.getElementById('cbi-flowproxy-subscription-' + id);
-                        if (el) leftCol.appendChild(el);
-                    });
+                        let leftIds = ['_left_title', 'auto_update', 'auto_update_time', 'update_via_proxy', 'filter_nodes', 'filter_keywords', 'user_agent', 'allow_insecure', 'packet_encoding'];
+                        let rightIds = ['_right_title', 'global_regions'];
 
-                    rightIds.forEach(id => {
-                        let el = document.getElementById('cbi-flowproxy-subscription-' + id);
-                        if (el) rightCol.appendChild(el);
-                    });
-
-                    divider.parentNode.insertBefore(row, divider);
-                }
-
-                let airportsSection = document.getElementById('cbi-flowproxy-subscription-_airports');
-                if (airportsSection) {
-                    let createRow = airportsSection.querySelector('.cbi-section-create');
-                    if (createRow) {
-                        createRow.style.display = 'flex';
-                        createRow.style.gap = '12px';
-                        createRow.style.alignItems = 'center';
-                        createRow.style.flexWrap = 'wrap';
-                        createRow.style.marginTop = '10px';
-
-                        let btnSave = document.querySelector('#cbi-flowproxy-subscription-_save_subscriptions button, #cbi-flowproxy-subscription-_save_subscriptions input[type=\\'button\\']');
-                        let btnUpdate = document.querySelector('#cbi-flowproxy-subscription-_update_subscriptions button, #cbi-flowproxy-subscription-_update_subscriptions input[type=\\'button\\']');
-                        let btnRebuild = document.querySelector('#cbi-flowproxy-subscription-_rebuild_groups button, #cbi-flowproxy-subscription-_rebuild_groups input[type=\\'button\\']');
-                        let btnRemove = document.querySelector('#cbi-flowproxy-subscription-_remove_subscriptions button, #cbi-flowproxy-subscription-_remove_subscriptions input[type=\\'button\\']');
-
-                        if (btnSave) createRow.appendChild(btnSave);
-                        if (btnUpdate) createRow.appendChild(btnUpdate);
-                        if (btnRebuild) createRow.appendChild(btnRebuild);
-                        if (btnRemove) createRow.appendChild(btnRemove);
-
-                        ['#cbi-flowproxy-subscription-_save_subscriptions',
-                         '#cbi-flowproxy-subscription-_update_subscriptions',
-                         '#cbi-flowproxy-subscription-_rebuild_groups',
-                         '#cbi-flowproxy-subscription-_remove_subscriptions'].forEach(id => {
-                            let el = document.querySelector(id);
-                            if (el) el.style.display = 'none';
+                        leftIds.forEach(id => {
+                            let el = document.getElementById('cbi-flowproxy-subscription-' + id);
+                            if (el) leftCol.appendChild(el);
                         });
+
+                        rightIds.forEach(id => {
+                            let el = document.getElementById('cbi-flowproxy-subscription-' + id);
+                            if (el) rightCol.appendChild(el);
+                        });
+
+                        divider.parentNode.insertBefore(row, divider);
+
+                        let airportsSection = document.getElementById('cbi-flowproxy-subscription-_airports');
+                        if (airportsSection) {
+                            let createRow = airportsSection.querySelector('.cbi-section-create');
+                            if (createRow) {
+                                createRow.style.display = 'flex';
+                                createRow.style.gap = '12px';
+                                createRow.style.alignItems = 'center';
+                                createRow.style.flexWrap = 'wrap';
+                                createRow.style.marginTop = '10px';
+
+                                let btnSave = document.querySelector('#cbi-flowproxy-subscription-_save_subscriptions button, #cbi-flowproxy-subscription-_save_subscriptions input[type="button"]');
+                                let btnUpdate = document.querySelector('#cbi-flowproxy-subscription-_update_subscriptions button, #cbi-flowproxy-subscription-_update_subscriptions input[type="button"]');
+                                let btnRebuild = document.querySelector('#cbi-flowproxy-subscription-_rebuild_groups button, #cbi-flowproxy-subscription-_rebuild_groups input[type="button"]');
+                                let btnRemove = document.querySelector('#cbi-flowproxy-subscription-_remove_subscriptions button, #cbi-flowproxy-subscription-_remove_subscriptions input[type="button"]');
+
+                                if (btnSave) createRow.appendChild(btnSave);
+                                if (btnUpdate) createRow.appendChild(btnUpdate);
+                                if (btnRebuild) createRow.appendChild(btnRebuild);
+                                if (btnRemove) createRow.appendChild(btnRemove);
+
+                                ['#cbi-flowproxy-subscription-_save_subscriptions',
+                                 '#cbi-flowproxy-subscription-_update_subscriptions',
+                                 '#cbi-flowproxy-subscription-_rebuild_groups',
+                                 '#cbi-flowproxy-subscription-_remove_subscriptions'].forEach(id => {
+                                    let el = document.querySelector(id);
+                                    if (el) el.style.display = 'none';
+                                });
+                            }
+                        }
+                        return true;
                     }
-                }
-            }, 200);
-        " />`;
+
+                    if (!optimizeUI()) {
+                        let interval = setInterval(() => {
+                            if (optimizeUI()) clearInterval(interval);
+                        }, 200);
+                        setTimeout(() => clearInterval(interval), 3000); 
+                    }
+                })();
+            `);
+            hookContainer.appendChild(script);
+            return hookContainer;
+        };
 
         o = s.taboption('subscription', form.DummyValue, '_left_title', '');
         o.rawhtml = true;
@@ -1332,7 +1260,6 @@ return view.extend({
                 'click': (ev) => {
                     ev.preventDefault();
                     ev.stopPropagation();
-                    // 🚨 彻底移除 map.save，将 JobObserver 修正为 observer
                     observer.execute('update_subscriptions', { airport_id: section_id }, '🔄 正在更新单个订阅');
                 }
             }, '更新订阅');
@@ -1346,7 +1273,6 @@ return view.extend({
         o.inputstyle = 'apply';
         o.onclick = function(ev) {
             ev.preventDefault();
-            // 🚨 彻底移除 map.save，将 JobObserver 修正为 observer
             observer.execute('update_subscriptions', { scope: 'all' }, '🔄 全局订阅更新');
         };
 
@@ -1355,18 +1281,28 @@ return view.extend({
         o.inputtitle = '重组本地节点组';
         o.onclick = function(ev) {
             ev.preventDefault();
-            // 🚨 彻底移除 map.save，将 JobObserver 修正为 observer
             observer.execute('rebuild_groups', {}, '⚡ 极速重组节点组');
         };
 
         o = s.taboption('subscription', form.Button, '_remove_subscriptions', '移除全部订阅节点');
         o.inputstyle = 'reset';
+        // 🚨 终极修复 3: 高效就地切除，避免内存大数组溢出
         o.onclick = function() {
-            let subnodes = [];
-            uci.sections(data[0], 'node', (res) => { if (res.airport_id || res.grouphash) subnodes = subnodes.concat(res['.name']) });
-            for (let i in subnodes) uci.remove(data[0], subnodes[i]);
-            if (subnodes.includes(uci.get(data[0], 'config', 'main_node'))) uci.set(data[0], 'config', 'main_node', 'nil');
-            this.inputtitle = '已移除 ' + subnodes.length + ' 个节点';
+            let count = 0;
+            let current_main = uci.get(data[0], 'config', 'main_node');
+            let main_removed = false;
+            
+            uci.sections(data[0], 'node', (res) => { 
+                if (res.airport_id || res.grouphash) {
+                    if (res['.name'] === current_main) main_removed = true;
+                    uci.remove(data[0], res['.name']);
+                    count++;
+                } 
+            });
+            
+            if (main_removed) uci.set(data[0], 'config', 'main_node', 'nil');
+            
+            this.inputtitle = '已移除 ' + count + ' 个节点';
             this.readonly = true;
             return this.map.save(null, true);
         }
