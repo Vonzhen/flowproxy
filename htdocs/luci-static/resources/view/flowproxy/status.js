@@ -1,7 +1,4 @@
 // --- [ FlowProxy | 状态与监控视图模块 | v1.0 Contract Aligned Edition ] ---
-// 功能：渲染系统运行状态大盘、内核管理、通信拨测与运行时日志展示
-// 核心升级：废除 service.list 轮询，全量接入 System 真相引擎；恢复资源管理 UI 面板。
-
 'use strict';
 'require dom';
 'require form';
@@ -12,10 +9,8 @@
 'require ui';
 'require view';
 
-// [Category A] 模块依赖对齐：废弃裸奔 job，接入统一的 observer 状态机
 'require flowproxy.observer as observer';
 
-// --- [ 子模块1：基础辅助函数与 CSS 注入 ] ---
 const css = `
 #log_textarea {
     padding: 10px;
@@ -30,10 +25,8 @@ const css = `
     background-color: #33ccff;
 }`;
 
-// [Category B] 物理路径对齐：严格指向 Constants.uc 规划的聚合日志目录
 const fp_dir = '/var/run/flowproxy/logs';
 
-// ⭐ 对接 Truth Chain：接入唯一的真实状态快照引擎
 const callSystemStatus = rpc.declare({
     object: 'flowproxy.system',
     method: 'status',
@@ -47,7 +40,6 @@ const callConnectionCheck = rpc.declare({
     expect: { '': {} }
 });
 
-// ⭐ 恢复资源版本查询 RPC 通道
 const callGetResVersion = rpc.declare({
     object: 'flowproxy.system',
     method: 'resources_get_version',
@@ -77,11 +69,8 @@ function getConnStat(o, site) {
                 ele.innerHTML = _('checking...');
                 ele.style.setProperty('color', 'gray');
                 
-                // ⭐ 使用系统实时探针，不走 Job 队列
                 return L.resolveDefault(callConnectionCheck(site), {}).then((ret) => {
-                    // [Category A] 防御性解包：穿透后端的 Success() 包装体
                     let res = (ret && ret.data) ? ret.data : ret;
-                    
                     if (res && res.result) {
                         ele.style.setProperty('color', 'green');
                         ele.innerHTML = _('passed') + ' (' + res.http_code + ')';
@@ -100,18 +89,13 @@ function getConnStat(o, site) {
     ]);
 }
 
-// ⭐ 恢复核心引擎：获取资源版本并绑定更新钩子
 function getResVersion(o, type) {
-    // 使用同步 RPC 查询版本号，不走 Job 队列
     return L.resolveDefault(callGetResVersion(type), {}).then((ret) => {
-        // [Category A] 防御性解包，兼容 v1.0 Result 协议
         let res = (ret && ret.data) ? ret.data : ret;
-        
         let spanTemp = E('div', { 'style': 'cbi-value-field' }, [
             E('button', {
                 'class': 'btn cbi-button cbi-button-action',
                 'click': ui.createHandlerFn(this, () => {
-                    // [Category B] 架构对齐：抛弃 fs.exec_direct，转由 observer 唤醒后端 Worker 异步处理
                     return observer.execute('update_resources', { action: 'update', target: type }, '🔄 检查资源更新')
                         .then(() => location.reload())
                         .catch(() => {});
@@ -122,7 +106,6 @@ function getResVersion(o, type) {
                 [ res.error ? 'not found' : (res.version || 'Unknown') ]
             ),
         ]);
-
         o.default = spanTemp;
     }).catch(() => {
         o.default = E('em', { 'style': 'color:red' }, 'RPC Error');
@@ -131,7 +114,6 @@ function getResVersion(o, type) {
 
 function getRuntimeLog(o, name, _option_index, section_id, _in_table) {
     const opt_name = o.option.split('_')[1];
-    // [Category C] Note: 将前端意图的 flowproxy 映射为后端的实际物理日志名 system.log
     const filename = opt_name === 'flowproxy' ? 'system' : opt_name;
 
     let section, log_level_el;
@@ -169,7 +151,6 @@ function getRuntimeLog(o, name, _option_index, section_id, _in_table) {
 
     let log;
     poll.add(L.bind(() => {
-        // [Category C] Note: 维持 fs.read_direct，路径已通过 fp_dir 对齐到 /var/run/flowproxy/logs
         return fs.read_direct(String.format('%s/%s.log', fp_dir, filename), 'text')
         .then((res) => {
             log = E('pre', { 'wrap': 'pre' }, [ res.trim() || _('Log is empty.') ]);
@@ -191,7 +172,6 @@ function getRuntimeLog(o, name, _option_index, section_id, _in_table) {
                     'class': 'btn cbi-button cbi-button-action',
                     'style': 'margin-left: 4px;',
                     'click': ui.createHandlerFn(this, () => { 
-                        // ⭐ 清理日志使用同步系统调用
                         return L.resolveDefault(callLogClean(filename), {}).then(() => location.reload());
                     })
                 }, [ _('Clean log') ])
@@ -204,22 +184,62 @@ function getRuntimeLog(o, name, _option_index, section_id, _in_table) {
     ]);
 }
 
-// --- [ 子模块2：大盘主视图映射构建 ] ---
 return view.extend({
     load() {
         return Promise.all([
             uci.load('flowproxy'),
-            L.resolveDefault(callSystemStatus(), {}) // ⭐ 提取全局快照
+            L.resolveDefault(callSystemStatus(), {})
         ]);
     },
 
     render(data) {
         let m, s, o;
-        let sys_status = (data[1] && data[1].data) ? data[1].data : data[1]; // 防御性解包全局快照
+        let sys_status = (data[1] && data[1].data) ? data[1].data : data[1]; 
         let isRunning = sys_status && sys_status.process ? sys_status.process.running : false;
 
         m = new form.Map('flowproxy');
+
+        // ============================================================================
+        // 🚨 架构缝合：渲染三态健康大盘警告框
+        // ============================================================================
+        s = m.section(form.NamedSection, 'config', 'flowproxy');
+        s.anonymous = true;
         
+        o = s.option(form.DummyValue, '_health_status');
+        o.render = function() {
+            if (sys_status && sys_status.enabled) {
+                let h_state = (sys_status.health && sys_status.health.state) ? sys_status.health.state : (isRunning ? "healthy" : "broken");
+                let h_failed = (sys_status.health && Array.isArray(sys_status.health.failed)) ? sys_status.health.failed : [];
+                
+                let alert_color = '#d4edda';
+                let alert_text = '#155724';
+                let alert_msg = '✅ <b>FlowProxy 运行正常 (Healthy)</b> - 所有核心组件与数据面均已就绪。';
+                
+                if (h_state === 'broken') {
+                    alert_color = '#f8d7da';
+                    alert_text = '#721c24';
+                    let fail_str = h_failed.length > 0 ? h_failed.join(", ") : "未知";
+                    alert_msg = '🚨 <b>系统严重损毁 (Broken)</b> - 核心进程或网络基建已脱机！丢失组件：' + fail_str;
+                } else if (h_state === 'degraded') {
+                    alert_color = '#fff3cd';
+                    alert_text = '#856404';
+                    let fail_str = h_failed.length > 0 ? h_failed.join(", ") : "未知";
+                    alert_msg = '⚠️ <b>系统降级运行 (Degraded)</b> - 进程存活但部分网络规则遗失，可能漏网。遗失：' + fail_str;
+                }
+
+                // 强制使用基础字符串拼接，防止老浏览器出现 Unexpected token 解析错误
+                let alert_style = 'background-color: ' + alert_color + '; color: ' + alert_text + '; padding: 15px; margin-bottom: 20px; border-radius: 4px; border-left: 5px solid ' + alert_text + '; font-size: 14px;';
+                let alert_box = E('div', { 'class': 'alert', 'style': alert_style });
+                alert_box.innerHTML = alert_msg;
+                return alert_box;
+            } else {
+                let disabled_style = 'background-color: #e2e3e5; color: #383d41; padding: 15px; margin-bottom: 20px; border-radius: 4px; border-left: 5px solid #383d41; font-size: 14px;';
+                let disabled_box = E('div', { 'class': 'alert', 'style': disabled_style });
+                disabled_box.innerHTML = '⏸️ <b>系统已禁用</b> - 用户未配置默认出站或手动关闭了服务。';
+                return disabled_box;
+            }
+        };
+
         // --- [ 子模块 2.1：网络拨测区 ] ---
         s = m.section(form.NamedSection, 'config', 'flowproxy', _('Connection check'));
         s.anonymous = true;
@@ -234,7 +254,6 @@ return view.extend({
         s = m.section(form.NamedSection, 'config', 'flowproxy', _('Resources management'));
         s.anonymous = true;
 
-        // 🚨 恢复 UI 渲染区：四大战略资源白名单版本检视
         o = s.option(form.DummyValue, '_china_ip4_version', _('China IPv4 list version'));
         o.cfgvalue = L.bind(getResVersion, this, o, 'china_ip4');
         o.rawhtml = true;
@@ -273,7 +292,6 @@ return view.extend({
                 check_btn.disabled = true;
                 check_btn.textContent = '🔄 正在执行检查...';
 
-                // ⭐ 内核版本检查使用系统同步查询
                 L.resolveDefault(callKernelVersionCheck(), {}).then(ret => {
                     let data = (ret && ret.data) ? ret.data : ret;
                     
@@ -307,7 +325,6 @@ return view.extend({
             }}, '🔍 检查线上版本');
 
             let do_update = function(track) {
-                // [Category B] 指令对齐：切换为 observer.execute，隔离裸壳操作
                 observer.execute('update_kernel', { track: track }, '🚀 Sing-box 内核热升级').then(() => {
                     setTimeout(() => { location.reload(); }, 1500);
                 }).catch(() => {});
@@ -334,7 +351,7 @@ return view.extend({
             return node;
         }
 
-        // --- [ 子模块4：通知中心配置 ] ---
+        // --- 通知中心配置 ---
         s = m.section(form.NamedSection, 'config', 'flowproxy', '消息中心');
         s.anonymous = true;
 
@@ -365,7 +382,7 @@ return view.extend({
             return this.map.save(null, true).then(() => { ui.changes.apply(true); });
         }
 
-        // --- [ 子模块5：日志挂载视图 ] ---
+        // --- 日志挂载视图 ---
         s = m.section(form.NamedSection, 'config', 'flowproxy');
         s.anonymous = true;
 
@@ -378,7 +395,6 @@ return view.extend({
         return m.render();
     },
 
-    // 禁用底部原生的默认保存按钮，强制用户通过业务按钮调度
     handleSaveApply: null,
     handleSave: null,
     handleReset: null
