@@ -1,204 +1,481 @@
 #!/bin/sh /etc/rc.common
-# --- [ FlowProxy | 系统生命周期控制器 init.d | v1.0 Route B Aligned ] ---
-# 职责：严格管理系统生命周期，只负责 procd 实例托管、事件监听与同步网关调用。
-# 约束：严禁包含任何业务逻辑、异步调用或网络状态变更代码。
+
+# FlowProxy init.d lifecycle controller.
+# Keep this file pure POSIX/ash-compatible shell.
 
 START=95
 USE_PROCD=1
+EXTRA_COMMANDS="restart_process"
+EXTRA_HELP="	restart_process	Restart sing-box process only"
 
 PROG=/usr/bin/sing-box
 RUN_DIR=/var/run/flowproxy
-CONF_FILE=$RUN_DIR/sing-box-run.json
-LOG_DIR=$RUN_DIR/logs
-JOB_DIR=$RUN_DIR/jobs
+CONF_FILE="$RUN_DIR/sing-box-run.json"
+NETWORK_MARKER="$RUN_DIR/.fp_network_ready"
+LIFECYCLE_EPOCH="$RUN_DIR/lifecycle.epoch"
+LIFECYCLE_ACTIVE="$RUN_DIR/lifecycle.active"
+LIFECYCLE_STARTING="$RUN_DIR/lifecycle.starting"
+LIFECYCLE_STOPPING="$RUN_DIR/lifecycle.stopping"
+LIFECYCLE_PROTECT="$RUN_DIR/lifecycle.protect"
+LIFECYCLE_LOCK="$RUN_DIR/lifecycle.bus.lock"
+CONTROL_UC=/usr/share/flowproxy/runtime/control.uc
+LOG_DIR="$RUN_DIR/logs"
+JOB_DIR="$RUN_DIR/jobs"
+TIMEOUT_BIN=/usr/bin/timeout
 
-# [Category A] 环境隔离声明
 export UCODE_PATH=/usr/share/ucode
 
-# [Category B] 基础环境初始化模块
-# 职责：确保运行时依赖的目录结构和基础状态完整
+run_bounded() {
+    local sec="$1"
+    shift
+
+    if [ -x "$TIMEOUT_BIN" ]; then
+        "$TIMEOUT_BIN" "$sec" "$@"
+    else
+        "$@"
+    fi
+}
+
+stop_singbox_fast() {
+    local pids
+    local pid
+    local wait_time=0
+    local alive
+
+    logger -t flowproxy "[STOP] Stopping sing-box process before dataplane teardown..."
+
+    run_bounded 3 ubus call service delete '{"name":"flowproxy","instance":"main"}' >/dev/null 2>&1 || true
+
+    pids=$(run_bounded 3 /bin/sh -c "ps w 2>/dev/null | grep '[s]ing-box' | grep ' run ' | grep -- '$CONF_FILE' | awk '{print \$1}'" 2>/dev/null)
+    [ -n "$pids" ] || return 0
+
+    for pid in $pids; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+
+    while [ "$wait_time" -lt 3 ]; do
+        alive=0
+        for pid in $pids; do
+            kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ "$alive" = "0" ] && break
+        sleep 1
+        wait_time=$((wait_time + 1))
+    done
+
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            logger -t flowproxy "[STOP] sing-box pid=$pid did not exit after TERM; sending KILL."
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
+ensure_procd_stop_target() {
+    if type procd_open_service >/dev/null 2>&1 && type procd_close_service >/dev/null 2>&1; then
+        procd_open_service "flowproxy" "$0" >/dev/null 2>&1 || true
+        procd_close_service >/dev/null 2>&1 || true
+    fi
+}
+
+acquire_lifecycle_lock() {
+    local wait=0
+    local max_wait="${1:-180}"
+    local age
+    local now
+    local mtime
+
+    mkdir -p "$RUN_DIR"
+    while ! mkdir "$LIFECYCLE_LOCK" 2>/dev/null; do
+        now=$(date +%s)
+        mtime=$(stat -c %Y "$LIFECYCLE_LOCK" 2>/dev/null)
+        [ -n "$mtime" ] || mtime=$now
+        age=$((now - mtime))
+
+        if [ "$age" -gt 240 ]; then
+            logger -t flowproxy "[LOCK] Reclaiming stale lifecycle bus lock age=$age."
+            rm -rf "$LIFECYCLE_LOCK" 2>/dev/null
+            continue
+        fi
+
+        if [ "$wait" -ge "$max_wait" ]; then
+            logger -t flowproxy "[LOCK] lifecycle bus lock timeout."
+            return 1
+        fi
+
+        sleep 1
+        wait=$((wait + 1))
+    done
+
+    echo "$$ $(date +%s)" > "$LIFECYCLE_LOCK/owner" 2>/dev/null
+    return 0
+}
+
+release_lifecycle_lock() {
+    rm -rf "$LIFECYCLE_LOCK" 2>/dev/null
+}
+
+reset_procd_instance_state() {
+    ubus call service delete '{"name":"flowproxy","instance":"main"}' >/dev/null 2>&1 || true
+    rm -f /var/run/flowproxy.pid 2>/dev/null
+    sleep 1
+}
+
+find_singbox_run_pids() {
+    run_bounded 3 /bin/sh -c "ps w 2>/dev/null | grep '[s]ing-box' | grep ' run ' | grep -- '$CONF_FILE' | awk '{print \$1}'" 2>/dev/null
+}
+
+stop_singbox_process_only() {
+    local pids
+    local pid
+    local wait_time=0
+    local alive
+
+    logger -t flowproxy "[PROCESS] Stopping sing-box process-only instance..."
+
+    run_bounded 3 ubus call service delete '{"name":"flowproxy","instance":"main"}' >/dev/null 2>&1 || true
+
+    pids=$(find_singbox_run_pids)
+    [ -n "$pids" ] || return 0
+
+    for pid in $pids; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+
+    while [ "$wait_time" -lt 5 ]; do
+        alive=0
+        for pid in $pids; do
+            kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ "$alive" = "0" ] && break
+        sleep 1
+        wait_time=$((wait_time + 1))
+    done
+
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            logger -t flowproxy "[PROCESS] sing-box pid=$pid did not exit after TERM; sending KILL."
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
+}
+
+register_process_instance() {
+    ubus call service delete '{"name":"flowproxy","instance":"main"}' >/dev/null 2>&1 || true
+    rm -f /var/run/flowproxy.pid 2>/dev/null
+    sleep 1
+
+    procd_open_service "flowproxy" "$0"
+    procd_open_instance "main"
+    procd_set_param command "$PROG" run -c "$CONF_FILE"
+    procd_set_param respawn 3600 5 20
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    uname -r | grep -Eq "^6\\.6" && procd_set_param env "QUIC_GO_DISABLE_GSO=true"
+    procd_close_instance
+    procd_close_service
+}
+
+wait_process_observed() {
+    local wait_time=0
+    local pids
+
+    while [ "$wait_time" -lt 10 ]; do
+        pids=$(find_singbox_run_pids)
+        if [ -n "$pids" ]; then
+            echo "$pids" | awk '{print $1}' > /var/run/flowproxy.pid 2>/dev/null || true
+            return 0
+        fi
+        sleep 1
+        wait_time=$((wait_time + 1))
+    done
+
+    return 1
+}
+
+update_cron() {
+    touch /etc/crontabs/root 2>/dev/null || true
+
+    sed -i '/# FlowProxy-Cron/d' /etc/crontabs/root 2>/dev/null || true
+    sed -i '/# FlowProxy-Watchdog/d' /etc/crontabs/root 2>/dev/null || true
+
+    local sub_auto
+    local sub_time
+    local asset_auto
+    local asset_time
+    local def_out
+    local wd_enabled
+
+    sub_auto=$(uci -q get flowproxy.subscription.auto_update)
+    sub_time=$(uci -q get flowproxy.subscription.auto_update_time)
+    asset_auto=$(uci -q get flowproxy.assets.auto_update)
+    asset_time=$(uci -q get flowproxy.assets.update_time)
+
+    if [ "$sub_auto" = "1" ] && [ -n "$sub_time" ]; then
+        echo "0 $sub_time * * * ubus call flowproxy.job start '{\"type\":\"update_subscriptions\",\"payload\":{\"scope\":\"all\",\"source\":\"cron\",\"auto_apply\":true,\"allow_cron_mode_switch\":false}}' # FlowProxy-Cron" >> /etc/crontabs/root
+    fi
+
+    if [ "$asset_auto" = "1" ] && [ -n "$asset_time" ]; then
+        echo "0 $asset_time * * * ubus call flowproxy.job start '{\"type\":\"update_assets\",\"payload\":{\"action\":\"update\",\"target\":\"manual\",\"source\":\"cron\",\"auto_apply\":true,\"allow_cron_mode_switch\":false}}' # FlowProxy-Cron" >> /etc/crontabs/root
+    fi
+
+    def_out=$(uci -q get flowproxy.routing.default_outbound)
+    wd_enabled=$(uci -q get flowproxy.watchdog.enabled)
+    [ -z "$wd_enabled" ] && wd_enabled="1"
+
+    if [ "$def_out" != "disabled" ] && [ "$def_out" != "nil" ] && [ "$wd_enabled" = "1" ]; then
+        echo "* * * * * ubus call flowproxy.job start '{\"type\":\"watchdog_report\",\"payload\":{\"source\":\"cron\"}}' # FlowProxy-Watchdog" >> /etc/crontabs/root
+    fi
+
+    echo "0 3 * * * ubus call flowproxy.job start '{\"type\":\"maintenance_logrotate\",\"payload\":{\"source\":\"cron\"}}' # FlowProxy-Cron" >> /etc/crontabs/root
+
+    /etc/init.d/cron restart >/dev/null 2>&1
+}
+
 prepare_env() {
-    # 1. 易失性运行时目录 (Tmpfs)
     mkdir -p "$RUN_DIR"
     mkdir -p "$LOG_DIR"
     mkdir -p "$JOB_DIR"
     mkdir -p "$RUN_DIR/resources"
-    
-    # 2. 🚨 架构修正：持久化归档目录 (Overlay)，统一由 init.d 初始化
-    mkdir -p "/overlay/log/flowproxy_archive"
-    
-    # 强制覆盖权限，防止首次安装时因 umask 导致 procd 无法读写
+    mkdir -p /overlay/log/flowproxy_archive
+
     chmod -R 0755 "$RUN_DIR"
     chown -R root:root "$RUN_DIR" 2>/dev/null
 
-    # 每次启动服务时，自动清空失败计数器，解除 Watchdog 的熔断锁定
     rm -f /tmp/flowproxy.fail_count 2>/dev/null
 
-    # 更新系统定时任务
     update_cron
 }
 
-update_cron() {
-    # 防御性 I/O 断言。确保目标挂载点绝对可用
-    touch /etc/crontabs/root 2>/dev/null || true
-    
-    # 1. 清理历史任务，防止重复写入导致无限叠加
-    sed -i '/# FlowProxy-Cron/d' /etc/crontabs/root 2>/dev/null || true
-    sed -i '/# FlowProxy-Watchdog/d' /etc/crontabs/root 2>/dev/null || true
-
-    local sub_auto=$(uci -q get flowproxy.subscription.auto_update)
-    local sub_time=$(uci -q get flowproxy.subscription.auto_update_time)
-
-    local asset_auto=$(uci -q get flowproxy.assets.auto_update)
-    local asset_time=$(uci -q get flowproxy.assets.update_time)
-
-    # 2. 注入业务定时更新任务 (订阅与规则集)
-    if [ "$sub_auto" = "1" ] && [ -n "$sub_time" ]; then
-        echo "0 $sub_time * * * ubus call flowproxy.job start '{\"type\":\"update_subscriptions\",\"payload\":{\"scope\":\"all\"}}' # FlowProxy-Cron" >> /etc/crontabs/root
-    fi
-
-    if [ "$asset_auto" = "1" ] && [ -n "$asset_time" ]; then
-        echo "0 $asset_time * * * ubus call flowproxy.job start '{\"type\":\"update_assets\",\"payload\":{\"action\":\"update\",\"target\":\"manual\"}}' # FlowProxy-Cron" >> /etc/crontabs/root
-    fi
-
-    # ===================================================================
-    # 🚨 3. 注入系统级 Watchdog 自愈探针 (每 1 分钟执行一次) [P2 阶段新增]
-    # ===================================================================
-    local def_out=$(uci -q get flowproxy.routing.default_outbound)
-    if [ "$def_out" != "disabled" ] && [ "$def_out" != "nil" ]; then
-        # 仅在服务处于“启用”意图时，才挂载守护犬 (🚨 修正：指向纯粹的 watchdog 模块)
-        echo "* * * * * ucode -e 'push(REQUIRE_SEARCH_PATH, \"/usr/share/ucode/*.uc\"); import { run_watchdog } from \"flowproxy.runtime.watchdog\"; run_watchdog(\"wd_\" + time());' # FlowProxy-Watchdog" >> /etc/crontabs/root
-    fi
-
-    # ===================================================================
-    # 🚨 4. 注入日志防失忆压缩钩子 (每天凌晨 3 点执行) [P3 阶段新增]
-    # ===================================================================
-    # 每天凌晨 03:00，自动将当天的 CRIT/ERROR/WARN 错误日志提取并打包到持久化分区
-    echo "0 3 * * * ucode -e 'push(REQUIRE_SEARCH_PATH, \"/usr/share/ucode/*.uc\"); import { logrotate } from \"flowproxy.core.logger\"; logrotate();' # FlowProxy-Cron" >> /etc/crontabs/root
-
-    # 重启系统的 cron 守护进程，让新加的定时任务立即生效
-    /etc/init.d/cron restart >/dev/null 2>&1
-}
-
-# [Category B] 服务启动入口 (Start Phase)
-# 职责：拦截禁用意图，阻塞调用同步生成网关，托管 procd 实例
 start_service() {
-    # 🚨 1. 建立全局互斥锁：防止 UI 高频点击与 WAN 波动导致的重入死锁
-    exec 9>/var/run/flowproxy_init.lock
-    if ! flock -n 9; then
-        logger -t flowproxy "[START] Concurrent execution blocked. Lock acquired by another process."
-        return 1
+    local wait_time=0
+    local def_out
+    local skip_network=0
+    local epoch
+
+    if [ "$FP_LIFECYCLE_LOCK_HELD" != "1" ]; then
+        acquire_lifecycle_lock || return 1
+        trap release_lifecycle_lock EXIT
     fi
 
-    # 🚨 2. 开机时序竞态保护 (Boot Sequence Race)
-    # 职责：等待底层网络组件就绪，防止半初始化状态下注入防火墙规则导致遗失。
-    local wait_time=0
-    while [ $wait_time -lt 15 ]; do
-        # 探测 fw4 表存在且 dnsmasq 进程存活
-        if nft list table inet fw4 >/dev/null 2>&1 && pgrep dnsmasq >/dev/null 2>&1; then
+    while [ "$wait_time" -lt 15 ]; do
+        if nft list table inet fw4 >/dev/null 2>&1 && \
+           [ -f /var/run/dnsmasq.pid ] && \
+           kill -0 "$(cat /var/run/dnsmasq.pid 2>/dev/null)" 2>/dev/null; then
             break
         fi
+
         sleep 2
         wait_time=$((wait_time + 2))
     done
 
-    if [ $wait_time -ge 15 ]; then
+    if [ "$wait_time" -ge 15 ]; then
         logger -t flowproxy "[START] WARN: Boot sequence dependencies not fully ready. Proceeding anyway."
     fi
 
-    # 🚨 控制面环境初始化必须前置
     prepare_env
+    rm -f /var/run/flowproxy.pid 2>/dev/null
 
-    # 1. 意图拦截 (数据面启动许可验证)
-    local def_out=$(uci -q get flowproxy.routing.default_outbound)
+    epoch=$(cat "$LIFECYCLE_EPOCH" 2>/dev/null)
+    [ -n "$epoch" ] || epoch="boot_$(date +%s)_$$"
+    echo "$epoch" > "$LIFECYCLE_STARTING"
+    export FP_LIFECYCLE_EPOCH="$epoch"
+
+    def_out=$(uci -q get flowproxy.routing.default_outbound)
     if [ "$def_out" = "disabled" ] || [ "$def_out" = "nil" ]; then
         logger -t flowproxy "[START] Aborted: User intent is DISABLED or NOT READY."
         return 0
     fi
 
-    # 2. 阻塞调用同步网关 (Route B 核心)
-    logger -t flowproxy "[START] Invoking synchronous runtime gateway..."
-    if ! ucode /usr/share/flowproxy/runtime/generate.uc; then
-        logger -t flowproxy "[START] FATAL: Gateway failed to generate artifact. Start aborted."
+    if [ -n "$FP_SKIP_NETWORK_SETUP" ]; then
+        skip_network=1
+        logger -t flowproxy "[START] Skipping generate/setup (Job pipeline already applied)."
+    fi
+
+    if [ "$skip_network" = "0" ]; then
+        logger -t flowproxy "[START] Runtime control will generate/check/commit config if needed."
+        logger -t flowproxy "[START] Assembling network environment via runtime control..."
+
+        if ! ucode "$CONTROL_UC" setup-network "init_start:$epoch"; then
+            logger -t flowproxy "[START] FATAL: Runtime control setup-network failed."
+            rm -f "$LIFECYCLE_STARTING"
+            return 1
+        fi
+    fi
+
+    if [ -s "$CONF_FILE" ]; then
+        reset_procd_instance_state
+        procd_open_instance "main"
+        procd_set_param command "$PROG" run -c "$CONF_FILE"
+        procd_set_param respawn 3600 5 20
+        procd_set_param stdout 1
+        procd_set_param stderr 1
+        uname -r | grep -Eq "^6\\.6" && procd_set_param env "QUIC_GO_DISABLE_GSO=true"
+
+        procd_close_instance
+
+        rm -f "$NETWORK_MARKER" "$RUN_DIR/apply.marker"
+        echo "$epoch" > "$LIFECYCLE_ACTIVE"
+        rm -f "$LIFECYCLE_STARTING" "$LIFECYCLE_STOPPING"
+        logger -t flowproxy "[START] procd instance registered successfully."
+    else
+        logger -t flowproxy "[START] FATAL: Artifact missing after gateway exit. Start aborted."
         return 1
     fi
 
-    # 3. Procd 实例托管与网络装配
-    if [ -s "$CONF_FILE" ]; then
-        logger -t flowproxy "[START] Assembling TProxy network environment..."
-        
-        # ===================================================================
-        # 🚨 3. 架构修复：使用安全沙盒 import 模块，验证 Result 包装状态，一旦失败硬阻断进程！
-        # ===================================================================
-        ucode -e 'push(REQUIRE_SEARCH_PATH, "/usr/share/ucode/*.uc"); import { setup } from "flowproxy.system.network"; let res = setup("init_start"); if (!res || !res.ok) exit(1);' || return 1
-
-        procd_open_instance "main"
-        procd_set_param command "$PROG" run -c "$CONF_FILE"
-        procd_set_param respawn
-        procd_set_param stdout 1
-        procd_set_param stderr 1
-        procd_set_param pidfile /var/run/flowproxy.pid
-
-        # 兼容特定内核版本的特性修复
-        uname -r | grep -Eq "^6\.6" && procd_set_param env "QUIC_GO_DISABLE_GSO"="true"
-
-        procd_close_instance
-        logger -t flowproxy "[START] procd instance registered successfully."
-    else
-         logger -t flowproxy "[START] FATAL: Artifact missing after gateway exit. Start aborted."
-         return 1
+    if [ "$FP_LIFECYCLE_LOCK_HELD" != "1" ]; then
+        release_lifecycle_lock
+        trap - EXIT
     fi
 }
 
-# [Category B] 服务销毁入口 (Stop Phase)
-# 职责：幂等清理网络栈，双重保险清理运行时产物
 stop_service() {
-    # 🚨 建立全局互斥锁
-    exec 9>/var/run/flowproxy_init.lock
-    if ! flock -n 9; then
-        logger -t flowproxy "[STOP] Concurrent execution blocked. Lock acquired by another process."
-        return 1
-    fi
+    local epoch
+    local active_epoch
+    local protect_age
+    local protect_mtime
+    local now
+    local skip_teardown=0
 
     logger -t flowproxy "[STOP] Initiating service teardown..."
 
-    # 1. 阻塞调用网络卸载网关
-    # 🚨 统一调用标准，执行清理
-    ucode -e 'push(REQUIRE_SEARCH_PATH, "/usr/share/ucode/*.uc"); import { teardown } from "flowproxy.system.network"; teardown("init_stop");' || true
+    if [ "$FP_LIFECYCLE_LOCK_HELD" != "1" ]; then
+        if ! acquire_lifecycle_lock 10; then
+            logger -t flowproxy "[STOP] WARN: lifecycle lock busy; forcing process stop and best-effort dataplane teardown."
+            stop_singbox_fast
+            run_bounded 20 ucode "$CONTROL_UC" teardown-network "init_stop:lock_busy_$(date +%s)_$$" reason=stop mode=auto no_run_json_policy=teardown_both >/dev/null 2>&1 || \
+                logger -t flowproxy "[STOP] WARN: best-effort teardown failed while lifecycle lock was busy."
+            rm -f "$NETWORK_MARKER"
+            rm -f "$RUN_DIR"/*.socket "$RUN_DIR"/*.sock "$RUN_DIR"/*.state 2>/dev/null || true
+            rm -f "$RUN_DIR"/*.marker 2>/dev/null || true
+            rm -f "$LIFECYCLE_STOPPING" "$LIFECYCLE_ACTIVE" 2>/dev/null || true
+            rm -f /var/run/flowproxy.pid 2>/dev/null
+            return 0
+        fi
+        trap release_lifecycle_lock EXIT
+    fi
 
-    # 2. 物理清除运行时产物 (双重保险)
-    rm -f "$CONF_FILE"
-    rm -f /var/run/flowproxy/*.marker
-    
-    # 3. 🚨 架构修复：回收系统级定时任务，消灭僵尸态泄漏
+    epoch=$(cat "$LIFECYCLE_EPOCH" 2>/dev/null)
+    active_epoch=$(cat "$LIFECYCLE_ACTIVE" 2>/dev/null)
+    [ -n "$epoch" ] || epoch="$active_epoch"
+    [ -n "$epoch" ] || epoch="stop_$(date +%s)_$$"
+
+    if [ -f "$LIFECYCLE_PROTECT" ]; then
+        now=$(date +%s)
+        protect_mtime=$(stat -c %Y "$LIFECYCLE_PROTECT" 2>/dev/null)
+        [ -n "$protect_mtime" ] || protect_mtime=0
+        protect_age=$((now - protect_mtime))
+        if [ "$protect_age" -lt 180 ]; then
+            logger -t flowproxy "[STOP] Protected lifecycle epoch detected (epoch=$epoch active=$active_epoch age=$protect_age). Explicit stop continues with dataplane teardown."
+            skip_teardown=0
+        fi
+    fi
+
+    echo "$epoch" > "$LIFECYCLE_STOPPING"
+    export FP_LIFECYCLE_EPOCH="$epoch"
+
+    stop_singbox_fast
+
+    if [ "$skip_teardown" = "0" ]; then
+        if ! run_bounded 20 ucode "$CONTROL_UC" teardown-network "init_stop:$epoch" reason=stop mode=auto no_run_json_policy=teardown_both >/dev/null 2>&1; then
+            logger -t flowproxy "[STOP] WARN: Runtime control teardown-network failed or timed out; continuing cleanup."
+        fi
+    else
+        logger -t flowproxy "[STOP] Network teardown skipped by lifecycle protection."
+    fi
+
+    if [ "$FP_SKIP_NETWORK_SETUP" != "1" ] && [ ! -f "$NETWORK_MARKER" ] && [ ! -f "$RUN_DIR/apply.marker" ]; then
+        rm -f "$CONF_FILE"
+    fi
+
+    rm -f "$NETWORK_MARKER"
+    rm -f "$RUN_DIR"/*.socket "$RUN_DIR"/*.sock "$RUN_DIR"/*.state 2>/dev/null || true
+
+    if [ ! -f "$RUN_DIR/apply.marker" ]; then
+        rm -f "$RUN_DIR"/*.marker
+    else
+        rm -f "$RUN_DIR/txn.marker"
+    fi
+    rm -f "$LIFECYCLE_STOPPING" "$LIFECYCLE_ACTIVE"
+
     touch /etc/crontabs/root 2>/dev/null || true
     sed -i '/# FlowProxy-Cron/d' /etc/crontabs/root 2>/dev/null || true
     sed -i '/# FlowProxy-Watchdog/d' /etc/crontabs/root 2>/dev/null || true
-    /etc/init.d/cron restart >/dev/null 2>&1
+    run_bounded 5 /etc/init.d/cron restart >/dev/null 2>&1 || true
+
+    rm -f /var/run/flowproxy.pid 2>/dev/null
 
     logger -t flowproxy "[STOP] Teardown complete."
+    ensure_procd_stop_target
+
+    if [ "$FP_LIFECYCLE_LOCK_HELD" != "1" ]; then
+        release_lifecycle_lock
+        trap - EXIT
+    fi
 }
 
-# [Category B] 服务重载入口 (Reload Phase)
-# 职责：回归原生语义，通过系统级 restart 实现状态彻底刷新
-reload_service() {
-    # 🚨 建立全局互斥锁
-    exec 9>/var/run/flowproxy_init.lock
-    if ! flock -n 9; then
-        logger -t flowproxy "[RELOAD] Concurrent execution blocked. Lock acquired by another process."
+stop() {
+    stop_service
+}
+
+restart() {
+    acquire_lifecycle_lock || return 1
+    FP_LIFECYCLE_LOCK_HELD=1
+    export FP_LIFECYCLE_LOCK_HELD
+
+    stop_service
+    local stop_rc=$?
+    if [ "$stop_rc" -ne 0 ]; then
+        unset FP_LIFECYCLE_LOCK_HELD
+        release_lifecycle_lock
+        return "$stop_rc"
+    fi
+
+    start_service
+    local start_rc=$?
+    unset FP_LIFECYCLE_LOCK_HELD
+    release_lifecycle_lock
+    return "$start_rc"
+}
+
+restart_process() {
+    logger -t flowproxy "[PROCESS] Starting sing-box process-only restart..."
+
+    if [ ! -x "$PROG" ]; then
+        logger -t flowproxy "[PROCESS] sing-box process-only restart failed: binary not executable: $PROG"
         return 1
     fi
 
+    if [ ! -s "$CONF_FILE" ]; then
+        logger -t flowproxy "[PROCESS] sing-box process-only restart failed: run config missing: $CONF_FILE"
+        return 1
+    fi
+
+    if ! run_bounded 15 "$PROG" check -c "$CONF_FILE" >/tmp/flowproxy-process-check.log 2>&1; then
+        logger -t flowproxy "[PROCESS] sing-box process-only restart failed: config check failed"
+        logger -t flowproxy "[PROCESS] check tail: $(tail -n 5 /tmp/flowproxy-process-check.log 2>/dev/null | tr '\n' ';')"
+        return 1
+    fi
+
+    stop_singbox_process_only
+    register_process_instance
+
+    if wait_process_observed; then
+        logger -t flowproxy "[PROCESS] sing-box process-only restart success"
+        return 0
+    fi
+
+    logger -t flowproxy "[PROCESS] sing-box process-only restart failed: pid not observed"
+    logger -t flowproxy "[PROCESS] sing-box log tail: $(tail -n 10 "$LOG_DIR/sing-box.log" 2>/dev/null | tr '\n' ';')"
+    logger -t flowproxy "[PROCESS] system log tail: $(logread 2>/dev/null | grep -E 'flowproxy|sing-box|procd' | tail -n 10 | tr '\n' ';')"
+    return 1
+}
+
+reload_service() {
     logger -t flowproxy "[RELOAD] Intercepted. Delegating to native restart sequence."
     restart
 }
 
-# [Category B] 事件触发器注册 (Trigger Phase)
-# 职责：监听关键状态变化，驱动生命周期状态机
 service_triggers() {
-    # [Category C] Note: 监听 UCI 配置变动
-    procd_add_reload_trigger "flowproxy"
-    
-    # [Category C] Note: 监听 WAN 接口上线，实现断网重连自愈
-    procd_add_interface_trigger "interface.*.up" wan /etc/init.d/flowproxy restart
+    return 0
 }
