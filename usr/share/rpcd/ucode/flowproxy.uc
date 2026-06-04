@@ -25,40 +25,121 @@ import { log } from 'flowproxy.core.logger';
 import { init as gen_trace_id } from 'flowproxy.core.trace';
 
 // 3. [引入系统模块]
-import { dispatch, get_status } from 'flowproxy.core.job';
+import { dispatch, get_status, parse_job_start_envelope, parse_job_query_envelope } from 'flowproxy.core.job';
 import { ExecSafe } from 'flowproxy.core.utils';
 import { StateManager } from 'flowproxy.runtime.state';
+import { get_urltest_status } from 'flowproxy.runtime.urltest';
+import { proxy_inbound_available } from 'flowproxy.core.config_helper';
 
 /**
  * =========================================================
  * 🧩 L2: Domain Queries (领域隔离对象)
  * =========================================================
  */
+const CONN_CHECK_TARGET = "https://www.gstatic.com/generate_204";
+const DIAG_MAX_TEXT = 24000;
+const DIAG_MAX_FILE = 32000;
+
+function _diag_truncate(text, max_len) {
+    text = text || "";
+    max_len = max_len || DIAG_MAX_TEXT;
+    if (length(text) > max_len)
+        return substr(text, 0, max_len) + "\n...[truncated]";
+    return text;
+}
+
+function _diag_file(path) {
+    let exists = access(path);
+    if (!exists) {
+        return {
+            exists: false,
+            path: path,
+            size: 0,
+            truncated: false,
+            raw: "",
+            parse_error: ""
+        };
+    }
+
+    let raw = readfile(path) || "";
+    let truncated = length(raw) > DIAG_MAX_FILE;
+    let out = truncated ? substr(raw, 0, DIAG_MAX_FILE) + "\n...[truncated]" : raw;
+
+    return {
+        exists: true,
+        path: path,
+        size: length(raw),
+        truncated: truncated,
+        raw: out,
+        parse_error: ""
+    };
+}
+
+function _diag_exec(cmd, args, trace_id) {
+    let res = ExecSafe(cmd, args, { timeout: 4 }, trace_id);
+    return {
+        ok: !!res.ok,
+        stdout: _diag_truncate((res.data && res.data.stdout) ? res.data.stdout : ""),
+        stderr: _diag_truncate((res.data && res.data.stderr) ? res.data.stderr : ""),
+        exit_code: (res.data && res.data.exit_code != null) ? res.data.exit_code : -1,
+        error: res.ok ? "" : (res.detail || "command failed")
+    };
+}
+
+function _diag_exec_sh(command, trace_id) {
+    let res = ExecSafe(BIN.SH, ["-c", command], { timeout: 4 }, trace_id);
+    return {
+        ok: !!res.ok,
+        stdout: _diag_truncate((res.data && res.data.stdout) ? res.data.stdout : ""),
+        stderr: "",
+        exit_code: (res.data && res.data.exit_code != null) ? res.data.exit_code : -1,
+        error: res.ok ? "" : (res.detail || "command failed")
+    };
+}
+
+function _conn_site_to_path(site) {
+    if (site === 'baidu' || site === 'direct') return 'direct';
+    if (site === 'google' || site === 'proxy') return 'proxy';
+    return null;
+}
+
 const NetworkQuery = {
     connection_check: function(args, trace_id) {
         let site = args.site;
-        if (site !== 'baidu' && site !== 'google') return Fail(ERR.E_SYSTEM_BUSY, 'Invalid target', trace_id);
+        let path = _conn_site_to_path(site);
+        if (!path) return Fail(ERR.E_SYSTEM_BUSY, 'Invalid target', trace_id);
 
-        let res;
-        if (site === 'baidu') {
-            res = ExecSafe(BIN.CURL, ["-I", "-s", "-m", "3", "-o", "/dev/null", "-w", "%{http_code}", "https://www.baidu.com"], null, trace_id);
-        } else {
-            let proxy_port = "5330";
-            let u = cursor();
-            u.load("flowproxy");
-            u.foreach("flowproxy", "server", function(s) {
-                if (s.enabled === '1' && (s.type === 'mixed' || s.type === 'socks')) {
-                    proxy_port = s.port || "5330";
-                    return false; 
-                }
-            });
-            let proxy_url = "socks5h://127.0.0.1:" + proxy_port;
-            res = ExecSafe(BIN.CURL, ["-I", "-s", "-m", "3", "-o", "/dev/null", "-w", "%{http_code}", "-x", proxy_url, "https://www.google.com"], null, trace_id);
+        let curl_args = ["-s", "-m", "3", "-o", "/dev/null", "-w", "%{http_code}", CONN_CHECK_TARGET];
+        if (path === 'proxy') {
+            let px_res = proxy_inbound_available(trace_id);
+            let px = (px_res.ok && px_res.data) ? px_res.data : { ok: false };
+            if (!px.ok) {
+                return Success({
+                    result: false,
+                    error: "proxy_unavailable",
+                    path: "proxy",
+                    target: CONN_CHECK_TARGET
+                }, 200, trace_id);
+            }
+            push(curl_args, "-x", "socks5h://127.0.0.1:" + px.port);
         }
 
+        let res = ExecSafe(BIN.CURL, curl_args, null, trace_id);
         let code_str = (res.ok && res.data) ? trim(res.data.stdout || "") : "";
-        let ok = (index(["200", "204", "301", "302"], code_str) !== -1);
-        return Success({ result: ok, http_code: code_str || "Timeout" }, 200, trace_id);
+        let ok = (index(["200", "204"], code_str) !== -1);
+        let payload = {
+            result: ok,
+            http_code: code_str || "Timeout",
+            path: path,
+            target: CONN_CHECK_TARGET
+        };
+        if (res.ok && res.data && res.data.exit_code != null) {
+            payload.curl_exit = res.data.exit_code;
+        }
+        if (!ok && !res.ok) {
+            payload.curl_exit = (res.data && res.data.exit_code != null) ? res.data.exit_code : -1;
+        }
+        return Success(payload, 200, trace_id);
     }
 };
 
@@ -92,6 +173,64 @@ const SystemQuery = {
         features.fp_has_tun = this._has_kmod('tun.ko', trace_id) || access('/etc/modules.d/30-tun');
         
         return Success(features, 200, trace_id);
+    },
+
+    get_uci_proxy_mode: function(args, trace_id) {
+        let u = cursor();
+        u.load("flowproxy");
+        let mode = u.get("flowproxy", "config", "proxy_mode") || u.get("flowproxy", "routing", "proxy_mode") || "redirect_tproxy";
+        if (mode === "redirect" || mode === "redirect_tproxy") mode = "redirect_tproxy";
+        else if (mode === "redirect_tun" || mode === "tun") mode = "tun";
+
+        return Success({ proxy_mode: mode }, 200, trace_id);
+    },
+
+    get_urltest_status: function(args, trace_id) {
+        return Success(get_urltest_status(trace_id), 200, trace_id);
+    },
+
+    get_runtime_artifacts: function(args, trace_id) {
+        return Success({
+            updated_at: time(),
+            run: _diag_file(PATH.RUN_JSON),
+            candidate: _diag_file(sprintf("%s/sing-box-run.candidate.json", PATH.RUNTIME)),
+            prev: _diag_file(sprintf("%s/sing-box-run.prev.json", PATH.RUNTIME))
+        }, 200, trace_id);
+    },
+
+    get_network_state: function(args, trace_id) {
+        return Success({
+            updated_at: time(),
+            nft: _diag_exec(BIN.NFT, ["list", "ruleset"], trace_id),
+            ip_rule: _diag_exec_sh("ip rule show", trace_id),
+            route: _diag_exec_sh("ip route show table all", trace_id),
+            route6: _diag_exec_sh("ip -6 route show table all", trace_id),
+            link: _diag_exec_sh("ip link show", trace_id)
+        }, 200, trace_id);
+    },
+
+    singbox_check_readonly: function(args, trace_id) {
+        let target = PATH.RUN_JSON;
+        if (!access(target)) {
+            return Success({
+                valid: false,
+                status: "not_available",
+                path: target,
+                output: "",
+                error: "run.json missing"
+            }, 200, trace_id);
+        }
+
+        let res = _diag_exec(BIN.SINGBOX, ["check", "-c", target], trace_id);
+        return Success({
+            valid: !!res.ok,
+            status: res.ok ? "ok" : "failed",
+            path: target,
+            output: res.stdout,
+            stderr: res.stderr,
+            exit_code: res.exit_code,
+            error: res.error
+        }, 200, trace_id);
     },
 
     version_check: function(trace_id) {
@@ -210,6 +349,39 @@ const FileQuery = {
         return Success({ version: trim(v || "Unknown") }, 200, trace_id);
     },
 
+    log_read_runtime: function(args, trace_id) {
+        let t = args.type || "system";
+        let path = "";
+
+        if (t === "system" || t === "flowproxy" || t === "main") {
+            path = PATH.LOG_SYS;
+        } else if (t === "sing-box") {
+            path = PATH.LOG_RUN;
+        } else if (t === "job") {
+            path = sprintf("%s/worker.log", PATH.JOB);
+        } else if (match(t, regexp('^job_[a-zA-Z0-9_-]+$'))) {
+            path = sprintf("%s/%s.log", PATH.JOB, t);
+        } else {
+            return Success({
+                type: t,
+                exists: false,
+                content: "",
+                error: "unsupported log type"
+            }, 200, trace_id);
+        }
+
+        let file = _diag_file(path);
+        return Success({
+            type: t,
+            exists: file.exists,
+            path: file.path,
+            size: file.size,
+            truncated: file.truncated,
+            content: file.raw,
+            error: file.exists ? "" : "not found"
+        }, 200, trace_id);
+    },
+
     log_clean: function(args, trace_id) {
         try {
             let t = args.type;
@@ -245,12 +417,12 @@ const FileQuery = {
 
 const JobQuery = {
     log_read: function(args, trace_id) {
-        let job_id = args.job_id;
-        // 🚨 终极修复 3: 显式进行 int() 强转，粉碎 JSON 反序列化带来的隐性类型陷阱 (Type Casting Trap)
+        let q = parse_job_query_envelope(args, trace_id);
+        if (!q.ok) return q;
+        let job_id = q.data.job_id;
         let cursor_pos = int(args.cursor) || 0;
 
-        if (type(job_id) !== 'string' || type(cursor_pos) !== 'int') return Success({ lines: [], next_cursor: cursor_pos, eof: true }, 200, trace_id);
-        if (!match(job_id, regexp('^[a-zA-Z0-9_-]+$'))) return Success({ lines: [], next_cursor: cursor_pos, eof: true }, 200, trace_id);
+        if (type(cursor_pos) !== 'int') return Success({ lines: [], next_cursor: cursor_pos, eof: true }, 200, trace_id);
 
         let fd = fs_open(sprintf("%s/%s.log", PATH.JOB, job_id), 'r');
         if (!fd) {
@@ -313,12 +485,14 @@ const job_methods = {
             let trace_id = "pending_req";
             try {
                 trace_id = gen_trace_id();
-                let r = req.args || req;
-                if (!JOB_TYPES[r.type]) {
-                    log(trace_id, 'WARN', 'GATEWAY', 'Auth Denied: Invalid Job Type - ' + r.type);
-                    return Fail(ERR.E_AUTH_DENIED, "Invalid Job Type Dispatch Attempt", trace_id);
+                let env = parse_job_start_envelope(req, trace_id);
+                if (!env.ok) return env;
+                let job_type = env.data.type;
+                if (!JOB_TYPES[job_type]) {
+                    log(trace_id, 'WARN', 'GATEWAY', 'Auth Denied: Invalid Job Type - ' + job_type);
+                    return Fail(ERR.E_AUTH_DENIED, "Invalid Job Type: " + job_type, trace_id);
                 }
-                return dispatch(r.type, r.payload, trace_id); 
+                return dispatch(job_type, env.data.payload, trace_id); 
             } catch(e) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
             }
@@ -330,7 +504,7 @@ const job_methods = {
             let trace_id = "pending_req";
             try {
                 trace_id = gen_trace_id();
-                return get_status((req.args || req).job_id, trace_id); 
+                return get_status(req, trace_id); 
             } catch(e) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
             }
@@ -381,7 +555,7 @@ const system_methods = {
             let trace_id = "pending_req";
             try {
                 trace_id = gen_trace_id();
-                if (!SYSTEM_METHODS["singbox_features"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API", trace_id);
+                if (!SYSTEM_METHODS["singbox_get_features"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API", trace_id);
                 return QueryService.handle("system", "get_features", {}, trace_id); 
             } catch(e) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
@@ -393,12 +567,90 @@ const system_methods = {
             let trace_id = "pending_req";
             try {
                 trace_id = gen_trace_id();
-                if (!SYSTEM_METHODS["kernel_version"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API", trace_id);
+                if (!SYSTEM_METHODS["kernel_version_check"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API", trace_id);
                 return QueryService.handle("system", "version_check", {}, trace_id); 
             } catch(e) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
             }
         } 
+    },
+    get_uci_proxy_mode: {
+        call: function() {
+            let trace_id = "pending_req";
+            try {
+                trace_id = gen_trace_id();
+                if (!SYSTEM_METHODS["get_uci_proxy_mode"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API: get_uci_proxy_mode", trace_id);
+                return QueryService.handle("system", "get_uci_proxy_mode", {}, trace_id);
+            } catch(e) {
+                return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
+            }
+        }
+    },
+    get_urltest_status: {
+        call: function() {
+            let trace_id = "pending_req";
+            try {
+                trace_id = gen_trace_id();
+                if (!SYSTEM_METHODS["get_urltest_status"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API: get_urltest_status", trace_id);
+                return QueryService.handle("system", "get_urltest_status", {}, trace_id);
+            } catch(e) {
+                return Success({
+                    updated_at: time(),
+                    status: "api_unavailable",
+                    detail: "Gateway Crash: " + ("" + e),
+                    items: {}
+                }, 200, trace_id);
+            }
+        }
+    },
+    get_runtime_artifacts: {
+        call: function() {
+            let trace_id = "pending_req";
+            try {
+                trace_id = gen_trace_id();
+                if (!SYSTEM_METHODS["get_runtime_artifacts"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API: get_runtime_artifacts", trace_id);
+                return QueryService.handle("system", "get_runtime_artifacts", {}, trace_id);
+            } catch(e) {
+                return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
+            }
+        }
+    },
+    log_read_runtime: {
+        args: { type: "" },
+        call: function(req) {
+            let trace_id = "pending_req";
+            try {
+                trace_id = gen_trace_id();
+                if (!SYSTEM_METHODS["log_read_runtime"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API: log_read_runtime", trace_id);
+                return QueryService.handle("file", "log_read_runtime", req.args || req, trace_id);
+            } catch(e) {
+                return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
+            }
+        }
+    },
+    get_network_state: {
+        call: function() {
+            let trace_id = "pending_req";
+            try {
+                trace_id = gen_trace_id();
+                if (!SYSTEM_METHODS["get_network_state"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API: get_network_state", trace_id);
+                return QueryService.handle("system", "get_network_state", {}, trace_id);
+            } catch(e) {
+                return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
+            }
+        }
+    },
+    singbox_check_readonly: {
+        call: function() {
+            let trace_id = "pending_req";
+            try {
+                trace_id = gen_trace_id();
+                if (!SYSTEM_METHODS["singbox_check_readonly"]) return Fail(ERR.E_AUTH_DENIED, "E_INVALID_API: singbox_check_readonly", trace_id);
+                return QueryService.handle("system", "singbox_check_readonly", {}, trace_id);
+            } catch(e) {
+                return Fail(ERR.E_SYSTEM_BUSY, "Gateway Crash: " + ("" + e), trace_id);
+            }
+        }
     },
     singbox_generator: { 
         args: { type: "", params: "" }, 
