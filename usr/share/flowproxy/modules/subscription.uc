@@ -494,6 +494,7 @@ function task_update_subscriptions(trace_id, payload) {
     let total_nodes = 0;
     let failed_airports = [];
     let success_airports = [];
+    let airport_stats = [];
 
     let scope = payload.scope === 'all' ? 'all' : null;
     let ap_res = list_enabled_airports(trace_id, scope, payload.airport_id);
@@ -534,6 +535,10 @@ function task_update_subscriptions(trace_id, payload) {
             log(trace_id, 'INFO', 'SUBSCRIPTION', sprintf("Airport [%s] subscription_success=true uci_write_success=true nodes=%d", ap_name, length(valid_nodes)));
             success_count++;
             total_nodes += length(valid_nodes);
+            push(airport_stats, {
+                name: ap_name,
+                nodes: length(valid_nodes)
+            });
             push(success_airports, sprintf("🔼 <b>%s:</b> %d 节点", ap_name, length(valid_nodes)));
         }
     }
@@ -571,6 +576,8 @@ function task_update_subscriptions(trace_id, payload) {
         success_count: success_count,
         failed_count: length(failed_airports),
         failed_airports: failed_airports,
+        airport_stats: airport_stats,
+        duration_sec: duration,
         total_nodes: total_nodes
     }), 200, trace_id);
 }
