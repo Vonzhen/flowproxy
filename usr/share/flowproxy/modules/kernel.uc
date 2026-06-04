@@ -1,250 +1,220 @@
 /**
- * FlowProxy | modules/kernel.uc | v1.2 (Observability & Syntax Safe Edition)
- * [Category B] 职能：负责识别硬件架构，从 GitHub 拉取专属内核并执行原子级热替换防砖更新。
- * [Category C] Note: 本版本已全量挂载底层 I/O 与进程标准错误 (stderr) 探针，彻底根除静默失败盲点。
+ * FlowProxy | modules/kernel.uc
+ * Role: read-only sing-box release check. The self-use edition must not
+ * download, install, replace, restart, or roll back the kernel binary.
  */
 
 'use strict';
 
-// [Category A] 解构原生库
-import { stat, unlink } from 'fs';
 import { cursor } from 'uci';
 
-// [Category A] 引入系统基石常量与契约
-import { PATH, BIN } from 'flowproxy.core.constants';
+import { PATH, BIN, LIMIT } from 'flowproxy.core.constants';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
-import { ExecSafe, shell_escape } from 'flowproxy.core.utils';
+import { with_changed } from 'flowproxy.core.module_result';
+import { ExecSafe } from 'flowproxy.core.utils';
 import { log } from 'flowproxy.core.logger';
+import { fetch_with_policy } from 'flowproxy.core.resource_fetch';
+
+function _strip_v(tag) {
+    return replace(sprintf("%s", tag || ""), regexp('^v'), "");
+}
+
+function _current_version(trace_id) {
+    let res = ExecSafe(BIN.SINGBOX, ["version"], { timeout: 3 }, trace_id);
+    if (!res.ok || !res.data || !res.data.stdout) return "unknown";
+
+    let lines = split(res.data.stdout || "", "\n");
+    for (let i = 0; i < length(lines); i++) {
+        let v = match(lines[i], regexp('^sing-box version (.*)'));
+        if (v) return trim(v[1] || "");
+    }
+    return "unknown";
+}
+
+function _openwrt_arch(trace_id) {
+    let arch_res = ExecSafe(BIN.SH, ["-c", "opkg print-architecture | awk '{print $2}' | grep -vE '^all$|^noarch$' | tail -n 1"], null, trace_id);
+    let arch = (arch_res.ok && arch_res.data) ? trim(arch_res.data.stdout || "") : "";
+    if (arch) return arch;
+
+    let uname_res = ExecSafe(BIN.SH, ["-c", "uname -m"], null, trace_id);
+    return (uname_res.ok && uname_res.data) ? trim(uname_res.data.stdout || "") : "";
+}
+
+function _package_ext(trace_id) {
+    let chk_apk = ExecSafe(BIN.SH, ["-c", "command -v apk"], null, trace_id);
+    if (chk_apk.ok && chk_apk.data && trim(chk_apk.data.stdout || "")) return "apk";
+    return "ipk";
+}
+
+function _find_asset(release_data, arch, ext) {
+    let assets = release_data.assets || [];
+    let rx_ext = regexp(sprintf('\\.%s$', ext));
+    let rx_arch = regexp(sprintf('openwrt_%s\\.%s$', arch, ext));
+    let rx_aarch64_check = regexp('aarch64');
+    let rx_aarch64_gen = regexp(sprintf('openwrt_aarch64_generic\\.%s$', ext));
+
+    for (let i = 0; i < length(assets); i++) {
+        let name = assets[i].name || "";
+        if (match(name, rx_ext) && match(name, rx_arch)) {
+            return assets[i];
+        }
+    }
+
+    if (match(arch || "", rx_aarch64_check)) {
+        for (let i = 0; i < length(assets); i++) {
+            let name = assets[i].name || "";
+            if (match(name, rx_ext) && match(name, rx_aarch64_gen)) {
+                return assets[i];
+            }
+        }
+    }
+
+    return null;
+}
+
+function _summary(body) {
+    let s = sprintf("%s", body || "");
+    s = replace(s, "\r", "\n");
+    let lines = split(s, "\n");
+    let out = [];
+    for (let i = 0; i < length(lines); i++) {
+        let line = trim(lines[i] || "");
+        if (!line) continue;
+        push(out, line);
+        if (length(out) >= 6) break;
+    }
+    let text = join("\n", out);
+    if (length(text) > 700) text = substr(text, 0, 700) + "...";
+    return text;
+}
+
+function _select_release(track, body, trace_id) {
+    let decoded = null;
+    try {
+        decoded = json(body || "");
+    } catch (e) {
+        log(trace_id, 'WARN', 'KERNEL', 'GitHub release JSON parse failed: ' + e);
+        return null;
+    }
+
+    if (track === "stable") {
+        return type(decoded) === "object" ? decoded : null;
+    }
+
+    if (type(decoded) === "array") {
+        for (let i = 0; i < length(decoded); i++) {
+            let item = decoded[i];
+            if (item && item.prerelease === true && item.tag_name) return item;
+        }
+    }
+
+    return null;
+}
+
+function _github_release(track, trace_id) {
+    let u = cursor();
+    u.load("flowproxy");
+    let token = u.get("flowproxy", "config", "github_token") || "";
+
+    let api_url = "https://api.github.com/repos/SagerNet/sing-box/releases";
+    if (track === "stable") api_url += "/latest";
+    else api_url += "?per_page=5";
+
+    let extra_args = [
+        "-H", "User-Agent: FlowProxy-OpenWrt-Gateway/1.0"
+    ];
+    if (token) {
+        push(extra_args, "-H", "Authorization: token " + token);
+    }
+
+    let api_fetch = fetch_with_policy(api_url, null, 'github_api', trace_id, {
+        timeout_sec: LIMIT.DL_TIMEOUT,
+        extra_args: extra_args,
+        fail_on_http: false
+    });
+
+    if (!api_fetch.ok || int(api_fetch.http_code || "0") < 200 || int(api_fetch.http_code || "0") >= 300) {
+        return Fail(ERR.E_SYSTEM_BUSY, sprintf(
+            "GitHub API check failed (effective=%s exit=%d http=%s).",
+            api_fetch.effective_mode || "none",
+            api_fetch.exit_code || 0,
+            api_fetch.http_code || "-"
+        ), trace_id);
+    }
+
+    let release_data = _select_release(track, api_fetch.response_body || "", trace_id);
+    if (!release_data || !release_data.tag_name) {
+        return Fail(ERR.E_SYSTEM_BUSY, "GitHub API returned no usable release for track=" + track, trace_id);
+    }
+
+    return Success(release_data, 200, trace_id);
+}
 
 /**
- * [Category B] 模块对外导出的主接口：执行内核热更新流水线
- * @param {string} trace_id - 贯穿始终的链路 ID
- * @param {object} payload - 业务参数 { track: "stable" | "beta" }
+ * Compatibility entry point: update_kernel now means read-only update check.
+ * It intentionally never downloads packages, replaces /usr/bin/sing-box,
+ * creates .bak files, restarts services, or touches dataplane state.
  */
 function task_update_kernel(trace_id, payload) {
     try {
         let safe_payload = payload || {};
-        let track = safe_payload.track || "stable";
-        
-        log(trace_id, 'INFO', 'KERNEL', '正在执行环境安全检测...');
-        
-        let df_res = ExecSafe(BIN.SH, ["-c", "df -k /tmp | awk 'NR==2 {print $4}'"], null, trace_id);
-        let tmp_avail = (df_res.ok && df_res.data) ? int(trim(df_res.data.stdout || "")) : 0;
-        if (tmp_avail > 0 && tmp_avail < 25000) {
-            return Fail(ERR.E_SYSTEM_BUSY, "/tmp 内存空间不足 25MB，已终止下载防爆内存。", trace_id);
-        }
+        let track = safe_payload.track === "beta" ? "beta" : "stable";
 
-        let arch_res = ExecSafe(BIN.SH, ["-c", "opkg print-architecture | awk '{print $2}' | grep -vE '^all$|^noarch$' | tail -n 1"], null, trace_id);
-        let owrt_arch = (arch_res.ok && arch_res.data) ? trim(arch_res.data.stdout || "") : "";
-        if (!owrt_arch) {
-            let uname_res = ExecSafe(BIN.SH, ["-c", "uname -m"], null, trace_id);
-            owrt_arch = (uname_res.ok && uname_res.data) ? trim(uname_res.data.stdout || "") : "";
-        }
-        if (!owrt_arch) return Fail(ERR.E_SYSTEM_BUSY, "无法识别系统架构", trace_id);
-        log(trace_id, 'INFO', 'KERNEL', '[SUCCESS] 硬件识别完成: 匹配专属架构 -> [' + owrt_arch + ']');
+        log(trace_id, 'INFO', 'KERNEL', 'Checking latest sing-box version, track=' + track);
 
-        log(trace_id, 'INFO', 'KERNEL', '正在连接 GitHub 获取 [' + track + '] 轨道版本...');
-        
-        let u = cursor(); 
-        u.load("flowproxy");
-        let token = u.get("flowproxy", "config", "github_token") || "";
-        
-        let curl_args = ["-sSL", "--connect-timeout", "10"];
-        if (token) {
-            push(curl_args, "-H");
-            push(curl_args, "Authorization: token " + token);
-        }
-        
-        let api_url = "https://api.github.com/repos/SagerNet/sing-box/releases";
-        if (track === "stable") {
-            api_url += "/latest";
-        } else {
-            // [Category C] Note: 测试版强行注入分页参数剪枝，防御内存击穿
-            api_url += "?per_page=5";
-        }
-        push(curl_args, api_url);
+        let current_version = _current_version(trace_id);
+        let arch = _openwrt_arch(trace_id);
+        let package_ext = _package_ext(trace_id);
+        if (!arch) return Fail(ERR.E_SYSTEM_BUSY, "Unable to detect OpenWrt architecture", trace_id);
 
-        let api_res = ExecSafe(BIN.CURL, curl_args, null, trace_id);
-        if (!api_res.ok || !api_res.data || !api_res.data.stdout) {
-            return Fail(ERR.E_SYSTEM_BUSY, "无法连接 GitHub API 或数据流被异常截断！请检查网络。", trace_id);
-        }
+        let release_res = _github_release(track, trace_id);
+        if (!release_res.ok) return release_res;
+        let release_data = release_res.data;
 
-        let release_list = null;
-        let release_data = null;
+        let latest_version = _strip_v(release_data.tag_name);
+        let asset = _find_asset(release_data, arch, package_ext);
+        let download_url = asset ? (asset.browser_download_url || "") : "";
+        let asset_name = asset ? (asset.name || "") : "";
+        let update_available = current_version !== "unknown" && latest_version !== "" && current_version !== latest_version;
 
-        try { 
-            release_list = json(api_res.data.stdout); 
-        } catch(e) {
-            log(trace_id, 'WARN', 'KERNEL', 'API 载荷解析失败: ' + e);
-        }
+        log(trace_id, 'INFO', 'KERNEL', sprintf(
+            'Latest %s version detected: current=%s latest=%s update_available=%s',
+            track,
+            current_version,
+            latest_version,
+            update_available ? "true" : "false"
+        ));
 
-        if (track === "stable") {
-            release_data = type(release_list) === "object" ? release_list : null;
-        } else if (type(release_list) === "array") {
-            for (let i = 0; i < length(release_list); i++) {
-                let item = release_list[i];
-                if (item && item.prerelease === true && type(item.assets) === "array") {
-                    release_data = item;
-                    break;
-                }
-            }
-        }
-        
-        let tag = release_data.tag_name;
-        log(trace_id, 'INFO', 'KERNEL', '[SUCCESS] 准备下载版本: ' + tag);
-
-        // ---------------------------------------------------------
-        // 🚨 修正 1：智能嗅探系统包管理器，决定下载后缀
-        // ---------------------------------------------------------
-        let has_apk = false;
-        let chk_apk = ExecSafe(BIN.SH, ["-c", "command -v apk"], null, trace_id);
-        if (chk_apk.ok && chk_apk.data && chk_apk.data.stdout) {
-            has_apk = true;
-        }
-        let target_ext = has_apk ? "apk" : "ipk";
-
-        let dl_url = "";
-        let assets = release_data.assets || [];
-        
-        let rx_ext = regexp(sprintf('\\.%s$', target_ext));
-        let rx_arch = regexp(sprintf('openwrt_%s\\.%s$', owrt_arch, target_ext));
-        let rx_aarch64_check = regexp('aarch64');
-        let rx_aarch64_gen = regexp(sprintf('openwrt_aarch64_generic\\.%s$', target_ext));
-
-        for (let i = 0; i < length(assets); i++) {
-            let name = assets[i].name || "";
-            if (match(name, rx_ext) && match(name, rx_arch)) {
-                dl_url = assets[i].browser_download_url;
-                break;
-            }
-        }
-        
-        if (!dl_url && match(owrt_arch, rx_aarch64_check)) {
-            for (let i = 0; i < length(assets); i++) {
-                let name = assets[i].name || "";
-                if (match(name, rx_ext) && match(name, rx_aarch64_gen)) {
-                    dl_url = assets[i].browser_download_url;
-                    break;
-                }
-            }
-        }
-        
-        if (!dl_url) return Fail(ERR.E_SYSTEM_BUSY, "未找到匹配架构的 " + target_ext + " 资产！", trace_id);
-
-        let parts = split(dl_url, "/");
-        let file_name = parts[length(parts) - 1];
-        let tmp_dir = sprintf("%s/hp_kernel_update", PATH.RUNTIME);
-        let file_path = sprintf("%s/%s", tmp_dir, file_name);
-
-        ExecSafe(BIN.RM, ["-rf", tmp_dir], null, trace_id);
-        ExecSafe(BIN.MKDIR, ["-p", tmp_dir], null, trace_id);
-
-        log(trace_id, 'INFO', 'KERNEL', '🚀 开始拉取专属内核 (' + file_name + ')...');
-        let dl_args = ["-L", "-#", "--connect-timeout", "15", "--max-time", "300", "-o", file_path];
-        if (token) {
-            push(dl_args, "-H");
-            push(dl_args, "Authorization: token " + token);
-        }
-        push(dl_args, dl_url);
-
-        let dl_res = ExecSafe(BIN.CURL, dl_args, null, trace_id);
-        if (!dl_res.ok || !stat(file_path)) {
-            ExecSafe(BIN.RM, ["-rf", tmp_dir], null, trace_id);
-            return Fail(ERR.E_SYSTEM_BUSY, "内核文件下载失败！", trace_id);
-        }
-
-        // ---------------------------------------------------------
-        // 🚨 修正 2：釜底抽薪，用 MV 代替 CP，彻底消灭“假阳性”
-        // ---------------------------------------------------------
-        let target_bin = BIN.SINGBOX;
-        let backup_bin = target_bin + ".bak";
-        if (stat(target_bin)) {
-            ExecSafe(BIN.MV, ["-f", target_bin, backup_bin], null, trace_id);
-        }
-
-        log(trace_id, 'INFO', 'KERNEL', '启动包管理器静默安装...');
-        
-        let safe_file_path = shell_escape(file_path);
-        let pkg_cmd = "";
-        
-        if (has_apk) {
-            // [Category A] 适配 OpenWrt 24.10+ 的 APK
-            pkg_cmd = sprintf("apk add --allow-untrusted --force-overwrite %s", safe_file_path);
-        } else {
-            // 🚨 架构修正：剔除错误的跨平台参数！仅使用标准强制覆盖。
-            // 配置文件冲突导致的返回码 255 将由下方的文件物理大小检测 (stat) 完美吸收。
-            pkg_cmd = sprintf("opkg install --force-reinstall --force-overwrite %s", safe_file_path);
-        }
-        
-        let pkg_res = ExecSafe(BIN.SH, ["-c", pkg_cmd], null, trace_id);
-        
-        // 由于上面使用了 MV，此时如果 target_bin 存在，那 100% 是新安装的！
-        if (pkg_res.ok || (stat(target_bin) && stat(target_bin).size > 10000000)) {
-            log(trace_id, 'INFO', 'KERNEL', '[SUCCESS] 包管理器已成功安装新内核。');
-        } else {
-            let pkg_err = trim(pkg_res.data ? (pkg_res.data.stderr || pkg_res.data.stdout || "") : "Unknown Error");
-            log(trace_id, 'ERROR', 'KERNEL', '包管理器彻底安装失败: ' + pkg_err);
-            
-            // 失败时，将备份还原
-            if (stat(backup_bin)) ExecSafe(BIN.MV, ["-f", backup_bin, target_bin], null, trace_id);
-            ExecSafe(BIN.RM, ["-rf", tmp_dir], null, trace_id);
-            return Fail(ERR.E_SYSTEM_BUSY, "包管理器安装内核失败，已自动回滚。", trace_id);
-        }
-
-        log(trace_id, 'INFO', 'KERNEL', '🛡️ [防线 1/2] 正在执行新内核架构运行测试 (Shell 代理诊断模式)...');
-        
-        // [Category A] 严格防御 Shell 注入风险
-        let safe_target_bin = shell_escape(target_bin);
-        
-        // [Category B] 构建诊断命令：利用 Shell 套壳执行，并强行将 stderr 合并至 stdout
-        // [Category C] Note: 此举专门用于捕获 ELF Loader 层面的非业务型崩溃 (如缺库、指令集越界)
-        let diag_cmd = sprintf("%s version 2>&1", safe_target_bin);
-        let test_arch = ExecSafe(BIN.SH, ["-c", diag_cmd], null, trace_id);
-
-        if (!test_arch.ok) {
-            // [Category A] 提取合并后的 Shell 代理输出流
-            let os_err = trim(test_arch.data ? (test_arch.data.stdout || test_arch.data.stderr || "") : "No Output / Shell Crash");
-            
-            // [Category C] Warning: 必须将 os_err 持久化至系统日志，为排查 ABI 或架构不匹配提供绝对物理依据
-            log(trace_id, 'ERROR', 'KERNEL', '防砖机制触发：新内核被操作系统拒绝装载！底层反馈: ' + os_err);
-            
-            // [Category B] 物理回滚机制
-            if (stat(backup_bin)) ExecSafe(BIN.MV, ["-f", backup_bin, target_bin], null, trace_id);
-            ExecSafe(BIN.RM, ["-rf", tmp_dir], null, trace_id);
-            return Fail(ERR.E_SYSTEM_BUSY, "内核架构测试失败，已回滚。底层日志: " + os_err, trace_id);
-        }
-        log(trace_id, 'INFO', 'KERNEL', '[SUCCESS] 架构测试通过，二进制工作正常。');
-
-        log(trace_id, 'INFO', 'KERNEL', '🛡️ [防线 2/2] 正在校验当前配置与新内核的语法兼容性...');
-        let run_conf = PATH.RUN_JSON;
-        if (stat(run_conf)) {
-            let test_syntax = ExecSafe(target_bin, ["check", "-c", run_conf], null, trace_id);
-            if (!test_syntax.ok) {
-                // [Category B] 暴露配置校验异常
-                let syntax_err = trim(test_syntax.data ? (test_syntax.data.stderr || "") : "");
-                log(trace_id, 'ERROR', 'KERNEL', '致命冲突！新版内核不兼容当前配置: ' + syntax_err);
-                
-                if (stat(backup_bin)) ExecSafe(BIN.MV, ["-f", backup_bin, target_bin], null, trace_id);
-                ExecSafe(BIN.RM, ["-rf", tmp_dir], null, trace_id);
-                return Fail(ERR.E_SYSTEM_BUSY, "语法兼容性测试失败！已回滚旧版内核。", trace_id);
-            }
-            log(trace_id, 'INFO', 'KERNEL', '[SUCCESS] 语法兼容性测试通过！新内核完美适配当前配置。');
-        } else {
-            log(trace_id, 'WARN', 'KERNEL', '服务当前未运行，无法执行语法校验，已跳过。');
-        }
-
-        log(trace_id, 'INFO', 'KERNEL', '🎉 核心动力热替换成功！');
-        log(trace_id, 'WARN', 'KERNEL', '⚠️ 提示: 新内核将在系统重启服务后接管。');
-
-        ExecSafe(BIN.RM, ["-rf", tmp_dir], null, trace_id);
-        
-        return Success({ reload_required: true }, 200, trace_id);
+        return Success(with_changed(false, {
+            current_version: current_version,
+            latest_version: latest_version,
+            update_available: update_available,
+            track: track,
+            target_arch: arch,
+            package_type: package_ext,
+            asset_name: asset_name,
+            download_url: download_url,
+            release_url: release_data.html_url || "",
+            published_at: release_data.published_at || "",
+            summary: _summary(release_data.body || ""),
+            runtime_applied: false,
+            kernel_installed: false,
+            download_performed: false,
+            restart_performed: false,
+            msg: sprintf(
+                "Kernel update check complete: current=%s latest=%s track=%s update_available=%s",
+                current_version,
+                latest_version,
+                track,
+                update_available ? "true" : "false"
+            )
+        }), 200, trace_id);
 
     } catch (e) {
         let err_msg = "" + e;
-        log(trace_id, 'CRIT', 'KERNEL', '内核更新引擎崩溃: ' + err_msg);
-        return Fail(ERR.E_SYSTEM_BUSY, "引擎崩溃: " + err_msg, trace_id);
+        log(trace_id, 'CRIT', 'KERNEL', 'Kernel update check crashed: ' + err_msg);
+        return Fail(ERR.E_SYSTEM_BUSY, "Kernel update check crashed: " + err_msg, trace_id);
     }
 }
 

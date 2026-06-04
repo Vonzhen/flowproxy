@@ -8,8 +8,9 @@
 'require form';
 'require network';
 'require poll';
-// 🚨 架构洗牌：彻底移除 'require rpc'，视图层无权直接建立 Ubus 信道
+// View code must not declare RPC calls directly.
 'require uci';
+'require ui';
 'require validation';
 'require view';
 'require fs';
@@ -17,25 +18,20 @@
 'require flowproxy as fp';
 'require tools.firewall as fwtool';
 'require tools.widgets as widgets';
-'require flowproxy.observer as observer';
-
-// 🚨 架构洗牌：原有的 callSystemStatus、callReadDomainList 等 rpc.declare 已被彻底抹除。
-// 视图层只需纯粹地向 SDK (fp) 索要数据。
+// View code uses the FlowProxy SDK instead of declaring RPC calls directly.
+// Keep backend access centralized in fp/observer helpers.
 
 /**
- * 获取底层网关状态 (接入 1.0 SDK)
+ * Read backend gateway status through the FlowProxy SDK.
  */
 function getServiceStatus() {
     return fp.rpc_call('flowproxy.system', 'status', {}).then((data) => {
         let isRunning = false;
         let version = '';
-        // SDK 返回的已经是解包后的纯净 Result.data
         if (data && data.process) isRunning = data.process.running;
         if (data && data.version) version = data.version.singbox || '';
         return { isRunning, version };
     }).catch(() => {
-        // 若后端崩溃，SDK 拦截器已弹出告警并记录 Trace ID。
-        // 此处只需做静态 UI 降级，防止 poll 轮询渲染导致 DOM 树崩溃。
         return { isRunning: false, version: 'RPC Error' };
     });
 }
@@ -51,6 +47,14 @@ function renderStatus(isRunning, version) {
     return renderHTML;
 }
 
+function saveAndApplyFlowProxy(map) {
+    return map.save(null, true).then(() => {
+        return ui.changes.apply(true);
+    }).then(() => {
+        return observer.execute('apply_config', { source: 'manual' }, _('Applying FlowProxy configuration'));
+    });
+}
+
 let stubValidator = {
     factory: validation,
     apply(type, value, args) {
@@ -64,16 +68,83 @@ let stubValidator = {
     }
 };
 
+let urltestStatusCache = {
+    loaded_at: 0,
+    data: null
+};
+
+function loadUrltestStatusOnce() {
+    let now = Date.now();
+    if (urltestStatusCache.data && (now - urltestStatusCache.loaded_at) < 30000)
+        return Promise.resolve(urltestStatusCache.data);
+
+    let getter = fp.getUrltestStatus ? fp.getUrltestStatus.bind(fp) : function() {
+        return fp.rpc_call('flowproxy.system', 'get_urltest_status', {});
+    };
+
+    return getter().then((data) => {
+        urltestStatusCache = {
+            loaded_at: Date.now(),
+            data: data || {}
+        };
+        return urltestStatusCache.data;
+    }).catch((e) => {
+        console.debug('[flowproxy] urltest status unavailable', e);
+        urltestStatusCache = {
+            loaded_at: Date.now(),
+            data: { status: 'api_unavailable', items: {} }
+        };
+        return urltestStatusCache.data;
+    });
+}
+
+function getOutboundStatusBySectionId(urltestStatus, id) {
+    let items = urltestStatus && urltestStatus.items ? urltestStatus.items : {};
+    if (!id)
+        return null;
+
+    if (items[id])
+        return items[id];
+
+    return items['cfg-' + id + '-out'] || null;
+}
+
+function latencyMarker(latency) {
+    let value = Number(latency);
+    if (!isFinite(value))
+        return '\u25CB';
+    if (value <= 400)
+        return '\u{1F7E2}';
+    if (value <= 1000)
+        return '\u{1F7E1}';
+    return '\u{1F534}';
+}
+
+function formatOutboundLabel(baseLabel, status) {
+    let suffix = '\u25CB ' + _('No data');
+
+    if (status && status.status === 'ok' && status.latency != null)
+        suffix = latencyMarker(status.latency) + ' ' + status.latency + 'ms';
+    else if (status && status.status === 'timeout')
+        suffix = '\u25CB ' + _('Timeout');
+
+    return String.format('%s        %s', baseLabel || '', suffix);
+}
 return view.extend({
+    handleSaveApply() {
+        return saveAndApplyFlowProxy(this.map);
+    },
+
     load() {
         return Promise.all([
             uci.load('flowproxy'),
             fp.getBuiltinFeatures(),
-            network.getHostHints()
+            network.getHostHints(),
+            loadUrltestStatusOnce()
         ]).then(responses => {
             /* 🌟 核心防御：如果配置里没有 assets 节点，直接内存注册，防止页面空白 */
             if (!uci.get('flowproxy', 'assets')) {
-                // ⭐ 统一类型和名字均为 assets，绝不与 config 节抢名字
+                // Use a single in-memory assets section to avoid blank pages.
                 uci.add('flowproxy', 'assets', 'assets');
             }
             return responses;
@@ -84,7 +155,8 @@ return view.extend({
         let m, s, o, ss, so;
 
         let features = data[1],
-            hosts = data[2]?.hosts;
+            hosts = data[2]?.hosts,
+            urltestStatus = data[3] || {};
 
         /* Cache all configured proxy nodes, they will be called multiple times */
         let proxy_nodes = {};
@@ -99,6 +171,7 @@ return view.extend({
 
         m = new form.Map('flowproxy', _('FlowProxy'),
             _('The modern ImmortalWrt proxy platform for ARM64/AMD64.'));
+        this.map = m;
 
         s = m.section(form.TypedSection);
         s.render = function () {
@@ -106,10 +179,10 @@ return view.extend({
         return L.resolveDefault(getServiceStatus()).then((res) => {
             let view = document.getElementById('service_status');
             
-            // 清空旧内容
+            // Clear old content.
             while (view.firstChild) view.removeChild(view.firstChild);
             
-            // 安全的原生 DOM 渲染
+            // Render with safe DOM nodes.
             let spanColor = res.isRunning ? 'green' : 'red';
             let statusText = res.isRunning ? _('RUNNING') : _('NOT RUNNING');
             
@@ -165,7 +238,7 @@ return view.extend({
         for (let i in proxy_nodes)
             o.value(i, proxy_nodes[i]);
         o.default = 'nil';
-        o.depends({'routing_mode': /^((?!custom).)+$/, 'proxy_mode': /^((?!redirect$).)+$/});
+        o.depends({'routing_mode': /^((?!custom).)+$/});
         o.rmempty = false;
 
         o = s.taboption('routing', fp.CBIStaticList, 'main_udp_urltest_nodes', _('URLTest nodes'),
@@ -290,15 +363,12 @@ return view.extend({
         }
 
         o = s.taboption('routing', form.ListValue, 'proxy_mode', _('Proxy mode'));
-        o.value('redirect', _('Redirect TCP'));
         if (features.fp_has_tproxy)
             o.value('redirect_tproxy', _('Redirect TCP + TProxy UDP'));
-        if (features.fp_has_ip_full && features.fp_has_tun) {
-            o.value('redirect_tun', _('Redirect TCP + Tun UDP'));
+        if (features.fp_has_ip_full && features.fp_has_tun)
             o.value('tun', _('Tun TCP/UDP'));
-        } else {
+        else
             o.description = _('To enable Tun support, you need to install <code>ip-full</code> and <code>kmod-tun</code>');
-        }
         o.default = 'redirect_tproxy';
         o.rmempty = false;
 
@@ -320,7 +390,6 @@ return view.extend({
         }
         so.value('system', _('System'));
         so.default = 'system';
-        so.depends('flowproxy.config.proxy_mode', 'redirect_tun');
         so.depends('flowproxy.config.proxy_mode', 'tun');
         so.rmempty = false;
         so.onchange = function(ev, section_id, value) {
@@ -345,7 +414,6 @@ return view.extend({
         so.datatype = 'uinteger';
         so.placeholder = '300';
         so.depends('flowproxy.config.proxy_mode', 'redirect_tproxy');
-        so.depends('flowproxy.config.proxy_mode', 'redirect_tun');
         so.depends('flowproxy.config.proxy_mode', 'tun');
 
         so = ss.option(form.Flag, 'bypass_cn_traffic', _('Bypass CN traffic'),
@@ -373,7 +441,7 @@ return view.extend({
             this.value('block-out', _('Block'));
             uci.sections(data[0], 'routing_node', (res) => {
                 if (res.enabled === '1')
-                    this.value(res['.name'], res.label);
+                    this.value(res['.name'], formatOutboundLabel(res.label || res['.name'], getOutboundStatusBySectionId(urltestStatus, res['.name'])));
             });
 
             return this.super('load', section_id);
@@ -689,10 +757,10 @@ return view.extend({
             delete this.keylist;
             delete this.vallist;
 
-            this.value('direct-out', _('Direct'));
+            this.value('direct-out', formatOutboundLabel(_('Direct'), getOutboundStatusBySectionId(urltestStatus, 'direct-out')));
             uci.sections(data[0], 'routing_node', (res) => {
                 if (res.enabled === '1')
-                    this.value(res['.name'], res.label);
+                    this.value(res['.name'], formatOutboundLabel(res.label || res['.name'], getOutboundStatusBySectionId(urltestStatus, res['.name'])));
             });
 
             return this.super('load', section_id);
@@ -1043,7 +1111,7 @@ return view.extend({
             this.value('direct-out', _('Direct'));
             uci.sections(data[0], 'routing_node', (res) => {
                 if (res.enabled === '1')
-                    this.value(res['.name'], res.label);
+                    this.value(res['.name'], formatOutboundLabel(res.label || res['.name'], getOutboundStatusBySectionId(urltestStatus, res['.name'])));
             });
 
             return this.super('load', section_id);
@@ -1056,24 +1124,24 @@ return view.extend({
         /* DNS rules start */
         s.tab('dns_rule', _('DNS Rules'));
 
-        // 🌟 新增：显式的全透明提示横幅
+        // Notice for sing-box evaluate DNS rules.
         o = s.taboption('dns_rule', form.DummyValue, '_dns_transparent_notice', '');
         o.depends('routing_mode', 'custom');
         o.rawhtml = true;
-        o.default = '<div style="padding: 12px 15px; margin-bottom: 15px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 4px; color: #333; line-height: 1.5;"><b>💡 Sing-box 1.14 以上版本专属特性 (全透明模式)：</b><br/>已支持 evaluate 评估规则动作。建议点击下方按钮生成<b>【智能分流底包】</b>，并在其上方添加您的自定义规则（例如指定去广告）。</div>';
+        o.default = '<div style="padding: 12px 15px; margin-bottom: 15px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 4px; color: #333; line-height: 1.5;"><b>Sing-box 1.14+ evaluate DNS rules</b><br/>The evaluate rule action is supported. Use the button below to generate a smart DNS base template, then add custom rules above it.</div>';
 
-        // 🌟 魔法按钮：直接显示，无需开关前提
-        o = s.taboption('dns_rule', form.DummyValue, '_magic_st_btn', _('快速向导'));
+        // Quick template button.
+        o = s.taboption('dns_rule', form.DummyValue, '_magic_st_btn', _('Quick guide'));
         o.depends('routing_mode', 'custom');
-        o.description = '一键导入智能分流模板作为基础底包。';
+        o.description = _('Import the smart DNS rule template as a base rule set.');
         o.renderWidget = function(section_id) {
     return E('button', {
         'class': 'btn cbi-button cbi-button-apply',
         'click': function(ev) {
             ev.preventDefault();
-            if (!confirm('⚠️ 确定要生成智能分流底包吗？\n生成后，请务必将这 3 条新规则移动至列表的最下方！')) return;
+            if (!confirm(_('Generate the smart DNS base rules now? Move the new rules to the bottom after generation.'))) return;
 
-            // 1. 删除旧规则 (如果存在)
+            // 1. Remove old template rules when present.
             ['dns_rule_st_eval', 'dns_rule_st_route', 'dns_rule_st_resp'].forEach(name => {
                 uci.remove('flowproxy', name);
             });
@@ -1091,7 +1159,7 @@ return view.extend({
             uci.set('flowproxy', s2, 'enabled', '1');
             uci.set('flowproxy', s2, 'action', 'route');
             uci.set('flowproxy', s2, 'match_response', '1');
-            uci.set('flowproxy', s2, 'rule_set', ['geoipcn']); // 列表类型必须是数组
+            uci.set('flowproxy', s2, 'rule_set', ['geoipcn']); // List value must be an array.
             uci.set('flowproxy', s2, 'server', 'default-dns');
 
             // 4. 注入 Response 规则
@@ -1101,13 +1169,13 @@ return view.extend({
             uci.set('flowproxy', s3, 'action', 'route');
             uci.set('flowproxy', s3, 'server', 'default-dns');
 
-            // 5. 保存并应用
+            // 5. Save and apply.
             uci.save().then(() => uci.apply()).then(() => {
-                alert('✅ 模板生成成功！页面即将刷新。');
+                alert(_('Template generated. The page will reload.'));
                 location.reload();
             });
         }
-    }, '一键生成 evaluate 模板');
+    }, _('Generate evaluate template'));
 };
 
         o = s.taboption('dns_rule', form.SectionValue, '_dns_rule', form.GridSection, 'dns_rule');
@@ -1208,7 +1276,7 @@ return view.extend({
             _('Invert match result.'));
         so.modalonly = true;
 
-        // 🌟 动作核心扩展：加入 evaluate 和 respond
+        // Add evaluate and respond DNS rule actions.
         so = ss.taboption('field_other', form.ListValue, 'action', _('Action'));
         so.value('route', _('Route'));
         so.value('evaluate', _('Evaluate'));
@@ -1220,9 +1288,9 @@ return view.extend({
         so.rmempty = false;
         so.editable = true;
 
-        // 🌟 新增：Match response (仅在 route 时显示)
-        so = ss.taboption('field_other', form.Flag, 'match_response', _('Match response (匹配响应)'),
-            _('开启后，将根据上级 <code>evaluate</code> 动作返回结果的 IP 进行目标匹配。<br/>通常配合 Rule Set (如 geoipcn) 使用。'));
+        // Match response is only shown for route actions.
+        so = ss.taboption('field_other', form.Flag, 'match_response', _('Match response'),
+            _('Match target IPs based on the response from an upstream evaluate action. Usually used with rule sets such as geoipcn.'));
         so.depends('action', 'route');
         so.modalonly = true;
 
@@ -1244,7 +1312,7 @@ return view.extend({
         so.rmempty = false;
         so.editable = true;
         so.depends('action', 'route');
-        so.depends('action', 'evaluate'); // 让 evaluate 也能选服务器
+        so.depends('action', 'evaluate');
 
         so = ss.taboption('field_other', form.ListValue, 'domain_strategy', _('Domain strategy'),
             _('Set domain strategy for this query.'));
@@ -1381,189 +1449,15 @@ return view.extend({
         so.modalonly = true;
         /* DNS rules end */
         
-        /* Rule Assets settings start */
-        s.tab('assets', _('规则集设置'));
-        // ⭐ 终极修复：把最后那个 'flowproxy' 换成 'assets'！
-        o = s.taboption('assets', form.SectionValue, '_assets', form.NamedSection, 'assets', 'assets');
-        ss = o.subsection;
-
-        /* -- 基础配置区块 -- */
-        so = ss.option(form.DummyValue, '_header_1', '');
-        so.rawhtml = true;
-        so.default = '<div style="padding: 8px 15px; margin-top: 10px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #17a2b8; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">⚙️ 基础配置</div>';
-
-        so = ss.option(form.Value, 'base_url', _('镜像源 URL'), '公有库下载源，推荐使用 jsDelivr 或国内加速源。');
-        so.default = 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing';
-        so.placeholder = 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing';
-
-        so = ss.option(form.Value, 'private_repo', _('私有库 URL'), '用于下载自定义 SRS 的私有直链前缀（可选）。');
-        so.placeholder = 'https://raw.githubusercontent.com/YourName/Repo/main';
-
-        so = ss.option(form.Flag, 'auto_update', _('自动更新开关'), '开启后将按设定的时间自动在后台检查更新。');
-        so.rmempty = false;
-        // ⭐ 已经彻底删除了错误的 so.write，直接走系统默认保存链路
-
-        so = ss.option(form.ListValue, 'update_time', _('每日更新时间'), '设定自动更新在每天的几点执行。');
-        for (let i = 0; i < 24; i++) so.value(i, i + ':00');
-        so.default = '4';
-        so.depends('auto_update', '1');
-        // ⭐ 已经彻底删除了错误的 so.write
-
-        so = ss.option(form.DummyValue, '_tg_notice', '');
-        so.rawhtml = true;
-        so.default = '<div style="margin-top: 15px; padding: 10px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; color: #333; font-size: 13px;">💡 <b>如需Telegram 自动化通知，请前往 <b>「服务状态」->「内核管理」</b> 页面下方，进行全局 TG 机器人配置。</div>';
-
-        /* -- 手动入库区块 -- */
-        so = ss.option(form.DummyValue, '_header_2', '');
-        so.rawhtml = true;
-        so.default = '<div style="padding: 8px 15px; margin-top: 30px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #007bff; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">📥 批量入库引擎</div>';
-
-        so = ss.option(form.DummyValue, '_manual_pull_ui', _('规则集名称'));
-        so.description = '支持同时输入多个规则集名称，请用<b>逗号或换行</b>分隔。<br/>脚本会自动从配置的源批量拉取资产文件。';
-        so.renderWidget = function(section_id, option_index, cfgvalue) {
-            return E('div', { 'style': 'display:flex; align-items:flex-start;' }, [
-                E('textarea', {
-                    'id': 'manual_rule_name_input',
-                    'class': 'cbi-input-textarea',
-                    'placeholder': 'geosite-google\ngeoip-netflix\ngeosite-cn',
-                    'style': 'flex: 1; max-width: 350px; min-height: 80px; padding: 8px;'
-                }),
-                E('button', {
-                    'class': 'cbi-button cbi-button-apply',
-                    'style': 'margin-left: 15px; margin-top: 5px;',
-                    'click': function(ev) {
-                        ev.preventDefault();
-                        let val = document.getElementById('manual_rule_name_input').value.trim();
-                        if (!val) { alert('请输入要下载的规则集名称！'); return; }
-
-                        let clean_args = val.replace(/[\n,]/g, ' ').replace(/\s+/g, ' ');
-                        // ⭐ 核心防线接管：彻底告别 shell，向 Job Observer 发送合法契约
-                        observer.execute('update_assets', { action: 'download', target: clean_args }, '📥 正在执行批量入库任务...');
-                    }
-                }, '批量入库')
-            ]);
-        };
-
-        /* -- 维护容灾区块 -- */
-        so = ss.option(form.DummyValue, '_header_3', '');
-        so.rawhtml = true;
-        so.default = '<div style="padding: 8px 15px; margin-top: 30px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #dc3545; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">🛠️ 维护与容灾</div>';
-
-        so = ss.option(form.DummyValue, '_maintenance_ui', _('高级操作'));
-        so.description = '<b>全量更新：</b>自动扫描当前 FlowProxy 正在使用的规则集并执行按需更新。<br/><b>安全回滚：</b>遇到更新后中断，一键恢复至上一个版本的稳定规则集。';
-        so.renderWidget = function(section_id, option_index, cfgvalue) {
-            return E('div', { 'style': 'display:flex; gap:15px;' }, [
-                E('button', {
-                    'class': 'cbi-button cbi-button-action',
-                    'style': 'background-color: #28a745; color: #fff; border-color: #28a745; padding: 6px 15px;',
-                    'click': function(ev) {
-                        ev.preventDefault();
-                        // ⭐ 核心防线接管：向 Job Observer 发送全量巡检契约
-                        observer.execute('update_assets', { action: 'update', target: 'manual' }, '🔄 正在执行全量规则巡检...');
-                    }
-                }, '🔄 全量规则集更新'),
-                E('button', {
-                    'class': 'cbi-button cbi-button-remove',
-                    'style': 'padding: 6px 15px;',
-                    'click': function(ev) {
-                        ev.preventDefault();
-                        if(confirm('⚠️ 危险操作：\n\n确定要执行紧急安全回滚吗？\n这将覆盖当前所有的规则集，恢复到上一次的安全备份，并重启 FlowProxy 服务！')) {
-                            // ⭐ 核心防线接管：触发灾难回滚任务
-                            observer.execute('system_rollback', { action: 'restore', target: 'assets' }, '🛡️ 正在执行紧急安全回滚...');
-                        }
-                    }
-                }, '🛡️ 紧急安全回滚')
-            ]);
-        };
-        /* Rule Assets settings end */
-
         /* Rule set settings start */
         s.tab('ruleset', _('Rule Set'));
-        o = s.taboption('ruleset', form.SectionValue, '_ruleset', form.GridSection, 'ruleset');
-        o.depends('routing_mode', 'custom');
-
-        ss = o.subsection;
-        ss.addremove = true;
-        ss.rowcolors = true;
-        ss.sortable = true;
-        ss.nodescriptions = true;
-        ss.modaltitle = L.bind(fp.loadModalTitle, this, _('Rule set'), _('Add a rule set'), data[0]);
-        ss.sectiontitle = L.bind(fp.loadDefaultLabel, this, data[0]);
-        ss.renderSectionAdd = L.bind(fp.renderSectionAdd, this, ss);
-
-        so = ss.option(form.Value, 'label', _('Label'));
-        so.load = L.bind(fp.loadDefaultLabel, this, data[0]);
-        so.validate = L.bind(fp.validateUniqueValue, this, data[0], 'ruleset', 'label');
-        so.modalonly = true;
-
-        so = ss.option(form.Flag, 'enabled', _('Enable'));
-        so.default = so.enabled;
-        so.rmempty = false;
-        so.editable = true;
-
-        so = ss.option(form.ListValue, 'type', _('Type'));
-        so.value('local', _('Local'));
-        so.value('remote', _('Remote'));
-        so.default = 'remote';
-        so.rmempty = false;
-
-        so = ss.option(form.ListValue, 'format', _('Format'));
-        so.value('binary', _('Binary file'));
-        so.value('source', _('Source file'));
-        so.default = 'binary';
-        so.rmempty = false;
-
-        so = ss.option(form.Value, 'path', _('Path'));
-        so.datatype = 'file';
-        so.placeholder = '/etc/flowproxy/ruleset/example.json';
-        so.rmempty = false;
-        so.depends('type', 'local');
-        so.modalonly = true;
-
-        so = ss.option(form.Value, 'url', _('Rule set URL'));
-        so.validate = function(section_id, value) {
-            if (section_id) {
-                if (!value)
-                    return _('Expecting: %s').format(_('non-empty value'));
-
-                try {
-                    let url = new URL(value);
-                    if (!url.hostname)
-                        return _('Expecting: %s').format(_('valid URL'));
-                }
-                catch(e) {
-                    return _('Expecting: %s').format(_('valid URL'));
-                }
-            }
-
-            return true;
-        }
-        so.rmempty = false;
-        so.depends('type', 'remote');
-        so.modalonly = true;
-
-        so = ss.option(form.ListValue, 'outbound', _('Outbound'),
-            _('Tag of the outbound to download rule set.'));
-        so.load = function(section_id) {
-            delete this.keylist;
-            delete this.vallist;
-
-            this.value('', _('Default'));
-            this.value('direct-out', _('Direct'));
-            uci.sections(data[0], 'routing_node', (res) => {
-                if (res.enabled === '1')
-                    this.value(res['.name'], res.label);
-            });
-
-            return this.super('load', section_id);
-        }
-        so.depends('type', 'remote');
-
-        so = ss.option(form.Value, 'update_interval', _('Update interval'),
-            _('Update interval of rule set.'));
-        so.placeholder = '1d';
-        so.depends('type', 'remote');
-        /* Rule set settings end */
+        o = s.taboption('ruleset', form.DummyValue, '_ruleset_moved_notice', _('Rule set management moved'));
+        o.rawhtml = true;
+        o.default = '<div style="padding:10px 12px;background:#f8f9fa;border-left:4px solid #17a2b8;border-radius:4px;color:#333;">' +
+            '<strong>' + _('Rule set definitions are now managed in Resources.') + '</strong>' +
+            '<div style="margin-top:4px;">' + _('Client rules can still reference enabled rule sets from their rule editors.') + '</div>' +
+            '<div style="margin-top:8px;"><a class="btn cbi-button cbi-button-neutral" href="' + L.url('admin/services/flowproxy/resources') + '">' + _('Open Resources') + '</a></div>' +
+            '</div>';
 
         /* ACL settings start */
         s.tab('control', _('Access Control'));
@@ -1712,92 +1606,15 @@ return view.extend({
         /* ACL settings end */
 
         /* ========================================================= */
-        /* Infra 架构设置区块 - 开始 */
+        /* Zashboard embedded panel */
         /* ========================================================= */
-        s.tab('infra', _('底层架构 (Infra)'));
-        
-        // 绑定到 UCI 中的 config infra 'infra' 节
-        o = s.taboption('infra', form.SectionValue, '_infra', form.NamedSection, 'infra', 'infra');
-        ss = o.subsection;
-
-        /* -- API 控制器设置 -- */
-        so = ss.option(form.DummyValue, '_header_api', '');
-        so.rawhtml = true;
-        so.default = '<div style="padding: 8px 15px; margin-top: 10px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #17a2b8; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">🔌 面板 API 控制器</div>';
-
-        so = ss.option(form.Value, 'clash_api_port', _('API 监听端口'), _('Zashboard 面板与核心通信的 RESTful API 端口。默认 9090。<br/><b>注意：</b>若在此处修改，需同步在 Zashboard 面板的设置中更改连接端口。'));
-        so.datatype = 'port';
-        so.placeholder = '9090';
-        so.rmempty = false;
-
-        so = ss.option(form.Value, 'clash_api_host', _('API 监听地址'), _('默认 0.0.0.0 允许局域网内所有设备访问面板 API。'));
-        so.datatype = 'ipaddr';
-        so.placeholder = '0.0.0.0';
-        so.rmempty = false;
-
-        /* -- 时间同步设置 -- */
-        so = ss.option(form.DummyValue, '_header_ntp', '');
-        so.rawhtml = true;
-        so.default = '<div style="padding: 8px 15px; margin-top: 30px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #ffc107; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">⏱️ 时钟同步设置</div>';
-
-        so = ss.option(form.Value, 'ntp_server', _('NTP 服务器'), _('独立的时间同步服务器地址。配置后，Sing-box 内核将接管自身的时间同步，防止因设备时间不准导致 TLS 握手失败。'));
-        so.datatype = 'or(hostname, ipaddr)';
-        so.placeholder = 'time.apple.com';
-
-        /* -- 核心入站端口设置 -- */
-        so = ss.option(form.DummyValue, '_header_ports', '');
-        so.rawhtml = true;
-        so.default = '<div style="padding: 8px 15px; margin-top: 30px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #6c757d; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">⚙️ 底层入站端口 (Inbounds)</div>';
-
-        so = ss.option(form.Value, 'mixed_port', _('Mixed 混合端口'), _('HTTP/Socks5 混合代理入站端口。'));
-        so.datatype = 'port';
-        so.placeholder = '5330';
-        
-        so = ss.option(form.Value, 'redirect_port', _('Redirect 端口'), _('TCP 透明代理重定向入站端口。'));
-        so.datatype = 'port';
-        so.placeholder = '5331';
-
-        so = ss.option(form.Value, 'tproxy_port', _('TProxy 端口'), _('UDP 透明代理入站端口。'));
-        so.datatype = 'port';
-        so.placeholder = '5332';
-
-        so = ss.option(form.Value, 'dns_port', _('DNS 劫持端口'), _('DNS 流量劫持入站端口。'));
-        so.datatype = 'port';
-        so.placeholder = '5333';
-
-        /* -- TUN 网卡设置 -- */
-        so = ss.option(form.DummyValue, '_header_tun', '');
-        so.rawhtml = true;
-        so.default = '<div style="padding: 8px 15px; margin-top: 30px; margin-bottom: 20px; background-color: #f8f9fa; border-left: 4px solid #28a745; border-radius: 4px; font-weight: bold; color: #333; font-size: 15px;">🖧 TUN 虚拟网卡设置</div>';
-
-        so = ss.option(form.Value, 'tun_name', _('TUN 网卡名称'));
-        so.placeholder = 'singtun0';
-
-        so = ss.option(form.Value, 'tun_addr4', _('IPv4 地址'), _('TUN 接口的虚拟 IPv4 网段。'));
-        so.datatype = 'cidr4';
-        so.placeholder = '172.19.0.1/30';
-
-        so = ss.option(form.Value, 'tun_addr6', _('IPv6 地址'), _('TUN 接口的虚拟 IPv6 网段。'));
-        so.datatype = 'cidr6';
-        so.placeholder = 'fdfe:dcba:9876::1/126';
-
-        so = ss.option(form.Value, 'tun_mtu', _('TUN MTU'), _('最大传输单元。'));
-        so.datatype = 'uinteger';
-        so.placeholder = '9000';
-        /* ========================================================= */
-        /* Infra 架构设置区块 - 结束 */
-        /* ========================================================= */
-        
-        /* ========================================================= */
-        /* Zashboard 内嵌注入点 - 开始 (在 Access Control 之后) */
-        /* ========================================================= */
-        s.tab('zashboard', _('面板'));
+        s.tab('zashboard', _('Panel'));
 
         o = s.taboption('zashboard', form.DummyValue, '_dash');
         o.rawhtml = true;
         o.default = '<div style="margin: -10px -15px; padding-bottom: 20px;"><iframe src="' + window.location.protocol + '//' + window.location.hostname + '/zashboard/" style="width: 100%; height: 85vh; border: none; border-radius: 4px; background: transparent;"></iframe></div>';
         /* ========================================================= */
-        /* Zashboard 内嵌注入点 - 结束 */
+        /* Zashboard embedded panel end */
         /* ========================================================= */
 
         return m.render();

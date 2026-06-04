@@ -10,7 +10,7 @@
       },
       "ubus": {
         "flowproxy.job": [ "status", "log" ],
-        "flowproxy.system": [ "status", "acllist_read", "connection_check", "singbox_get_features", "resources_get_version", "kernel_version_check" ],
+        "flowproxy.system": [ "status", "acllist_read", "connection_check", "singbox_get_features", "resources_get_version", "kernel_version_check", "get_uci_proxy_mode", "get_urltest_status", "get_runtime_artifacts", "log_read_runtime", "get_network_state", "singbox_check_readonly" ],
         "uci": [ "get" ]
       },
       "uci": [ "flowproxy" ]
@@ -23,7 +23,7 @@
       },
       "ubus": {
         "flowproxy.job": [ "start" ],
-        "flowproxy.system": [ "acllist_write", "certificate_write", "log_clean", "singbox_generator" ],
+        "flowproxy.system": [ "acllist_write", "log_clean", "singbox_generator" ],
         "uci": [ "set", "add", "delete", "apply" ]
       },
       "uci": [ "flowproxy" ]

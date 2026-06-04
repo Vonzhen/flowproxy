@@ -17,13 +17,14 @@ import { cursor } from 'uci';
 import { PATH, BIN } from 'flowproxy.core.constants';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
+import { with_changed } from 'flowproxy.core.module_result';
 import { ExecSafe, shell_escape } from 'flowproxy.core.utils';
 import { log } from 'flowproxy.core.logger';
+import { fetch_with_policy } from 'flowproxy.core.resource_fetch';
 
 const UCICONFIG = 'flowproxy';
 const RULE_DIR = PATH.RULESET;
-const TMP_DIR = sprintf("%s/assets_tmp", PATH.RUNTIME); 
-const LOCAL_PROXY = "socks5h://127.0.0.1:5330"; 
+const TMP_DIR = sprintf("%s/assets_tmp", PATH.RUNTIME);
 
 function _ensure_dirs(trace_id) {
     let dirs = [RULE_DIR, TMP_DIR];
@@ -47,32 +48,23 @@ function _get_file_md5(file_path, trace_id) {
  * 带有 HTTP 状态熔断与物理体积校验的下载探针
  */
 function _fetch_with_retry(url, dest_path, timeout_sec, trace_id) {
-    let t = "" + (timeout_sec || 15);
-    
-    log(trace_id, 'INFO', 'ASSETS', '尝试直连下载: ' + url);
-    // [Category A] 注入 -f (--fail) 参数，强制 HTTP >= 400 时返回非零退出码 (22)
-    let res = ExecSafe(BIN.CURL, ["-sSLf", "--connect-timeout", t, "-o", dest_path, url], null, trace_id);
-    
-    // [Category B] 职能：验证物理落盘状态，引入 50 Bytes 最小体积阈值，防御 CDN 返回 200 OK 的错误提示页
+    let res = fetch_with_policy(url, dest_path, 'asset_download', trace_id, {
+        timeout_sec: timeout_sec || 15
+    });
+
     let f_stat = stat(dest_path);
     if (res.ok && f_stat && f_stat.size > 50) {
         return true;
     }
 
-    log(trace_id, 'WARN', 'ASSETS', '直连失败或文件损坏，尝试通过代理下载...');
-    // [Category A] 代理通道同步应用严格校验
-    res = ExecSafe(BIN.CURL, ["-sSLf", "--connect-timeout", t, "-x", LOCAL_PROXY, "-o", dest_path, url], null, trace_id);
-    
-    f_stat = stat(dest_path);
-    if (res.ok && f_stat && f_stat.size > 50) {
-        return true;
-    }
-
-    // [Category C] Warning: 发生致命错误或被体积探针拦截。必须清理残骸，防止污染下一次全量巡检的 MD5 比对。
     if (f_stat) {
         unlink(dest_path);
     }
-    
+
+    log(trace_id, 'ERROR', 'ASSETS', sprintf(
+        'Download failed: url=%s effective=%s error=%s',
+        url, (res && res.effective) ? res.effective : "none", (res && res.error) ? res.error : "unknown"
+    ));
     return false;
 }
 
@@ -229,12 +221,11 @@ function _download_manual(target_str, trace_id) {
     }
     
     // [Category B] 抛出富结构数据载荷
-    return Success({ 
-        reload_required: (length(updated_items) > 0), 
-        updated: updated_items, 
-        unchanged: [], 
-        failed: fail_items 
-    }, 200, trace_id);
+    return Success(with_changed(length(updated_items) > 0, {
+        updated: updated_items,
+        unchanged: [],
+        failed: fail_items
+    }), 200, trace_id);
 }
 
 /**
@@ -255,7 +246,7 @@ function _update_all_rulesets(trace_id) {
 
     if (length(active_files) === 0) {
         log(trace_id, 'INFO', 'ASSETS', '未发现任何激活的 .srs 本地规则集。');
-        return Success({ reload_required: false, updated: [], unchanged: [], failed: [] }, 200, trace_id);
+        return Success(with_changed(false, { updated: [], unchanged: [], failed: [] }), 200, trace_id);
     }
 
     let updated_items = [];
@@ -305,12 +296,11 @@ function _update_all_rulesets(trace_id) {
 
     log(trace_id, 'INFO', 'ASSETS', sprintf("全量巡检完成. 成功:%d 不变:%d 失败:%d", length(updated_items), length(unchanged_items), length(fail_items)));
     
-    return Success({ 
-        reload_required: (length(updated_items) > 0), 
-        updated: updated_items, 
-        unchanged: unchanged_items, 
-        failed: fail_items 
-    }, 200, trace_id);
+    return Success(with_changed(length(updated_items) > 0, {
+        updated: updated_items,
+        unchanged: unchanged_items,
+        failed: fail_items
+    }), 200, trace_id);
 }
 
 /**
@@ -322,7 +312,7 @@ function task_rollback_assets(trace_id, payload) {
         let count = _restore_assets_backup(trace_id);
         if (count > 0) {
             log(trace_id, 'INFO', 'ASSETS', sprintf('成功物理恢复 %d 个资产文件。', count));
-            return Success({ restored: count, reload_required: true }, 200, trace_id);
+            return Success(with_changed(true, { restored: count }), 200, trace_id);
         }
         return Fail(ERR.E_SYSTEM_BUSY, "未发现可用的备份文件 (.bak)", trace_id);
     } catch (e) {
@@ -360,4 +350,43 @@ function task_update_assets(trace_id, payload) {
 }
 
 // 🚨 铁律 1
-export { task_update_assets, task_rollback_assets };
+function task_update_assets_summary(trace_id, payload) {
+    let res = task_update_assets(trace_id, payload);
+    if (!res.ok) return Fail(ERR.E_SYSTEM_BUSY, res.detail, trace_id);
+
+    let data = res.data || {};
+    let updated = data.updated || [];
+    let unchanged = data.unchanged || [];
+    let failed = data.failed || [];
+    let total_count = length(updated) + length(unchanged) + length(failed);
+
+    let msg = "📊 <b>巡检报告</b>%0A--------------------------------%0A";
+    msg += sprintf("📥 成功更新: %d | ❌ 失败: %d%0A", length(updated), length(failed));
+    msg += "📑 <b>详细清单:</b>%0A";
+
+    for (let i = 0; i < length(failed); i++) msg += sprintf("❌ %s (失败)%0A", failed[i]);
+    for (let i = 0; i < length(updated); i++) msg += sprintf("🔼 %s (已更新)%0A", updated[i]);
+
+    if (length(unchanged) > 0) {
+        if (total_count <= 30) {
+            for (let i = 0; i < length(unchanged); i++) msg += sprintf("🔽 %s (未变更)%0A", unchanged[i]);
+        } else {
+            msg += sprintf("🔽 ...另有 %d 项资产未变更 (已折叠)%0A", length(unchanged));
+        }
+    }
+
+    if (data.changed) {
+        msg += "%0A[RESTART_PENDING]";
+    } else {
+        msg += "%0A♻️ <b>服务重启:</b> 无需重启 (无文件变更)";
+    }
+
+    return Success(with_changed(!!data.changed, {
+        msg: msg,
+        updated: updated,
+        unchanged: unchanged,
+        failed: failed
+    }), 200, trace_id);
+}
+
+export { task_update_assets, task_update_assets_summary, task_rollback_assets };

@@ -40,7 +40,7 @@ const BIN = {
     UCODE:   "/usr/bin/ucode",                         // [Category A] Ucode 执行引擎 (新增: 供 worker.uc 唤起预检沙盒)
     SINGBOX: "/usr/bin/sing-box",
     CURL:    "/usr/bin/curl",
-    PIDOF:   "/bin/pidof",
+    LOGGER:  "/usr/bin/logger",
     TIMEOUT: "/usr/bin/timeout",
     TAR:     "/bin/tar",
     UNZIP:   "/usr/bin/unzip",
@@ -64,8 +64,53 @@ const LIMIT = {
     DL_TIMEOUT:    60,       // 资源下载超时 (秒)
     JOB_TIMEOUT:   600,      // 异步长任务全局超时 (10分钟)
     MAX_READ:      8192,     // 默认单次读取 8KB
-    LOCK_RETRY:    5         // 锁抢占重试次数
+    LOCK_RETRY:    5,        // 锁抢占重试次数
+    NET_CONNECT_TIMEOUT: 10, // NetExec 统一 connect-timeout (秒)
+    NET_RETRY: 2,            // NetExec 统一 --retry
+    NET_RETRY_DELAY: 1       // NetExec 统一 --retry-delay (秒)
+};
+
+/**
+ * [ IMMUTABLE CONTRACT TABLE ]
+ * 数据面验收与运行时 SSOT（healthcheck / watchdog / notifier 唯一引用）
+ */
+const DATAPLANE = {
+    NFT_TABLE: "inet flowproxy",
+    NFT_CHAINS_REQUIRED: [
+        "prerouting_nat",
+        "prerouting_mangle",
+        "output_nat",
+        "output_mangle"
+    ],
+    PROCESS: {
+        PIDFILE: PATH.RUNNING_PID,
+        CONF_MARKER: "sing-box-run.json"
+    },
+    RUNTIME_STATE: "/var/run/flowproxy/runtime.state"
+};
+
+/**
+ * [ IMMUTABLE CONTRACT TABLE ]
+ * 资源拉取网络策略 SSOT（resources / assets 唯一引用）
+ */
+const RESOURCE_FETCH_POLICY = {
+    github_api: {
+        mode: "proxy_preferred",
+        fallback: "direct"
+    },
+    asset_download: {
+        mode: "proxy_preferred",
+        fallback: "direct"
+    },
+    notifier_api: {
+        mode: "proxy_preferred",
+        fallback: "direct"
+    },
+    kernel_download: {
+        mode: "proxy_preferred",
+        fallback: "direct"
+    }
 };
 
 // 🚨 铁律 1: 文件末尾统一导出
-export { PATH, BIN, LIMIT };
+export { PATH, BIN, LIMIT, DATAPLANE, RESOURCE_FETCH_POLICY };

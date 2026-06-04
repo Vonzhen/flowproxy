@@ -1,74 +1,99 @@
 /**
- * FlowProxy | core/logger.uc | v1.1
- * 统一日志黑匣子 (SSOT Aligned Edition)
- * 架构修正：彻底剥离环境装配权，完全依赖 init.d 的目录初始化。
+ * FlowProxy | core/logger.uc | v1.3 SSOT Dual-Sink Stable
+ * 职责：统一系统日志入口；写 system.log，同时 WARN/ERROR/CRIT/FATAL 写入 syslog。
  */
 
 'use strict';
 
 import { open, stat } from 'fs';
 import { PATH, BIN } from 'flowproxy.core.constants';
-import { ExecSafe } from 'flowproxy.core.utils';
+import { ExecSafe, shell_escape } from 'flowproxy.core.utils';
 
-/**
- * 写入 1.0 标准化可追踪日志
- */
+function _normalize_level(level) {
+    let lvl = level || "INFO";
+    if (lvl === "warn") return "WARN";
+    if (lvl === "error") return "ERROR";
+    if (lvl === "crit") return "CRIT";
+    if (lvl === "fatal") return "FATAL";
+    if (lvl === "info") return "INFO";
+    return lvl;
+}
+
+function _should_syslog(level) {
+    let lvl = _normalize_level(level);
+    return lvl === "WARN" || lvl === "ERROR" || lvl === "CRIT" || lvl === "FATAL";
+}
+
+function _syslog_priority(level) {
+    let lvl = _normalize_level(level);
+    if (lvl === "ERROR") return "user.err";
+    if (lvl === "CRIT") return "user.crit";
+    if (lvl === "FATAL") return "user.crit";
+    if (lvl === "WARN") return "user.warn";
+    return "user.info";
+}
+
+function _safe_message(msg) {
+    let s = sprintf("%s", msg || "");
+    s = replace(s, "\n", " ");
+    return s;
+}
+
 function log(trace_id, level, mod, message) {
+    let lvl = _normalize_level(level);
+    let tid = trace_id || "system";
+    let module_name = mod || "CORE";
+    let msg = _safe_message(message);
+
+    let line = sprintf(
+        "[%s] [%s] [%s] [%s] %s\n",
+        sprintf("%d", time()),
+        tid,
+        lvl,
+        module_name,
+        msg
+    );
+
     try {
-        // 🚨 架构修正：删除了这里原有的 MKDIR 越权行为，直接假设 PATH.LOG_SYS 所在目录已就绪
-        let path = PATH.LOG_SYS;
-        let fd = open(path, "a+");
-        
+        ExecSafe(BIN.MKDIR, ["-p", PATH.LOG_DIR], null, tid);
+
+        let fd = open(PATH.LOG_SYS, "a+");
         if (fd) {
-            let ts = "";
-            let ts_res = ExecSafe(BIN.DATE, ["+%Y-%m-%d %H:%M:%S"]);
-            if (ts_res.ok && ts_res.data) {
-                ts = trim(ts_res.data.stdout || "");
-            }
-            if (ts == "") ts = "" + time(); 
-            
-            let t_id = trace_id ? trace_id : "SYS_NO_TRACE";
-            let line = sprintf("[%s] [%s] [%s] [%s] %s\n", ts, t_id, level || "INFO", mod || "CORE", message || "");
-            
             fd.write(line);
             fd.close();
         }
-    } catch(e) {
-        let err = "" + e;
+
+        if (_should_syslog(lvl) && stat(BIN.LOGGER)) {
+            let sys_msg = sprintf("[%s] [%s] %s", tid, module_name, msg);
+            ExecSafe(
+                BIN.SH,
+                ["-c", sprintf(
+                    "%s -t flowproxy -p %s %s",
+                    shell_escape(BIN.LOGGER),
+                    shell_escape(_syslog_priority(lvl)),
+                    shell_escape(sys_msg)
+                )],
+                null,
+                tid
+            );
+        }
+    } catch (e) {
+        ExecSafe(
+            BIN.SH,
+            ["-c", sprintf(
+                "%s -t flowproxy -p user.crit %s",
+                shell_escape(BIN.LOGGER),
+                shell_escape("logger.uc write failed: " + e)
+            )],
+            null,
+            tid
+        );
     }
 }
 
-/**
- * P3 日志防失忆钩子
- */
 function logrotate() {
-    try {
-        // 🚨 架构修正：删除了这里原有的 MKDIR 越权行为，直接使用 PATH.LOG_ARCHIVE
-        
-        if (!stat(PATH.LOG_SYS)) return; 
-
-        let dt_res = ExecSafe(BIN.DATE, ["+%Y%m%d_%H%M"]);
-        let dt_str = (dt_res.ok && dt_res.data) ? trim(dt_res.data.stdout || "") : "" + time();
-        let archive_file = sprintf("%s/sys_%s_warn.log", PATH.LOG_ARCHIVE, dt_str);
-        
-        // 提取致命日志
-        let cmd = sprintf("grep -E 'WARN|CRIT|ERROR|FATAL' %s > %s 2>/dev/null", PATH.LOG_SYS, archive_file);
-        ExecSafe(BIN.SH, ["-c", cmd]);
-        
-        // 截断文件，保护句柄
-        let fd = open(PATH.LOG_SYS, "w");
-        if (fd) {
-            fd.write(""); 
-            fd.close();
-        }
-        
-        // 压缩并清理 7 天前存档
-        ExecSafe(BIN.SH, ["-c", sprintf("gzip -f %s", archive_file)]);
-        ExecSafe(BIN.SH, ["-c", sprintf("find %s -type f -name '*.gz' -mtime +7 -delete 2>/dev/null", PATH.LOG_ARCHIVE)]);
-        
-    } catch(e) {
-        let err = "" + e;
-    }
+    ExecSafe(BIN.MKDIR, ["-p", PATH.LOG_DIR], null, "logrotate");
+    return true;
 }
 
 export { log, logrotate };

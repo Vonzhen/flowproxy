@@ -76,7 +76,7 @@ return baseclass.extend({
 
             // 状态 2: 严格拦截 1.0 Result 协议 (强类型断言防御)
             // 🚨 架构对齐：拒绝弱类型猜测。只要 ok 不为绝对的 true，一律视为违宪阻断！
-            if (res.ok !== true) {
+            if (res && typeof res.ok !== 'undefined' && res.ok !== true) {
                 let trace_id = res.trace_id || 'N/A';
                 console.error(`[FlowProxy SDK] API Fault in ${object}.${method}. Trace: ${trace_id}`, res);
                 
@@ -84,18 +84,34 @@ return baseclass.extend({
                 let detail = res.detail ? ` (${res.detail})` : '';
                 
                 // 全局拦截渲染错误弹窗
-                ui.addNotification(null, E('p', msg + detail), 'danger');
+                let err = {
+                    code: res.error || 'E_API_FAULT',
+                    message: res.detail || res.error || 'System/Contract Error',
+                    trace_id: res.trace_id || 'N/A',
+                    raw: res
+                };
+
+                ui.addNotification(null, E('span', '后端报错: ' + err.message), 'danger');
+                return Promise.reject(err);
                 
                 // 阻断 Promise 链，绝不允许残缺/裸数据流入 View 层
                 return Promise.reject(new Error("E_API_FAULT"));
             }
 
             // 状态 3: 成功，直接交付纯净的 Result.data 负载
-            return res.data;
+            return (res && typeof res.ok !== 'undefined') ? res.data : res;
         }).catch(e => {
+            if (e && (e.code === 'E_API_FAULT' || e.message === "E_RPC_TIMEOUT")) {
+                return Promise.reject(e);
+            }
             // 过滤掉内部主动抛出的阻断错误，避免二次捕获弹窗
             if (e && e.message !== "E_RPC_TIMEOUT" && e.message !== "E_API_FAULT") {
-                ui.addNotification(null, E('p', _('Network/System Error: ') + e.message));
+            if (e && (e.code === 'E_API_FAULT' || e.message === "E_RPC_TIMEOUT")) {
+                return Promise.reject(e);
+            }
+            let msg = e && e.message ? e.message : (e && e.code ? e.code : String(e || 'Unknown error'));
+            ui.addNotification(null, E('p', _('Network/System Error: ') + msg), 'danger');
+            return Promise.reject(e);
             }
             return Promise.reject(e);
         });
@@ -110,13 +126,14 @@ return baseclass.extend({
         return this.rpc_call('flowproxy.system', 'singbox_get_features', {});
     },
 
+    getUrltestStatus: function() {
+        return this.rpc_call('flowproxy.system', 'get_urltest_status', {});
+    },
+
     uploadCertificate: function(type, filename, ev) {
         return ui.uploadFile('/tmp/flowproxy_certificate.tmp', ev.target)
         .then(res => {
-            return this.rpc_call('flowproxy.system', 'certificate_write', { filename: filename })
-            .then(() => {
-                ui.addNotification(null, E('p', _('Your %s was successfully uploaded. Size: %sB.').format(type, res.size)));
-            });
+            ui.addNotification(null, E('p', _('Certificate upload is not available in this release (API removed). File saved to tmp only. Size: %sB.').format(res.size)), 'warning');
         })
         .catch(e => { /* 错误已由拦截器处理 */ });
     },

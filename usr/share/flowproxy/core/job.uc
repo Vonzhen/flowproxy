@@ -26,6 +26,8 @@ import { log } from 'flowproxy.core.logger';
 import { init as gen_trace_id } from 'flowproxy.core.trace';
 
 const SCRIPT_WORKER = "/usr/share/flowproxy/runtime/worker.uc";
+const JOB_ID_PATTERN = regexp('^job_[a-zA-Z0-9_-]+$');
+const JSON_SUFFIX_PATTERN = regexp('\\.json$');
 
 const STATE_ENUM = {
     PENDING: "pending",         
@@ -64,6 +66,107 @@ function _write_state(id, data_obj) {
     return true;
 }
 
+function _normalize_job_id(raw_id) {
+    if (raw_id == null) return "";
+    let job_id = trim(sprintf("%s", raw_id));
+    if (match(job_id, JSON_SUFFIX_PATTERN)) {
+        job_id = replace(job_id, JSON_SUFFIX_PATTERN, "");
+    }
+    return job_id;
+}
+
+/**
+ * Phase 5.5：job.status / job.log 唯一合法入参 { "job_id": "job_xxx" }
+ * 兼容：顶层 args、裸字符串、JSON 字符串（不鼓励 CLI 裸传）
+ */
+function parse_job_query_envelope(req, trace_id) {
+    let raw = req;
+
+    if (type(req) === "string") {
+        let s = trim(req);
+        if (length(s) === 0) {
+            return Fail(ERR.E_AUTH_DENIED, "Invalid Job Query Schema", trace_id);
+        }
+        if (substr(s, 0, 1) === "{") {
+            try {
+                raw = json(s);
+            } catch (e) {
+                return Fail(ERR.E_AUTH_DENIED, "Invalid Job Query Schema", trace_id);
+            }
+        } else {
+            raw = { job_id: s };
+        }
+    } else if (req && req.args != null) {
+        raw = req.args;
+    }
+
+    if (type(raw) === "string") {
+        let s = trim(raw);
+        if (substr(s, 0, 1) === "{") {
+            try {
+                raw = json(s);
+            } catch (e) {
+                return Fail(ERR.E_AUTH_DENIED, "Invalid Job Query Schema", trace_id);
+            }
+        } else {
+            raw = { job_id: s };
+        }
+    }
+
+    if (type(raw) !== "object" && type(raw) !== "array") {
+        return Fail(ERR.E_AUTH_DENIED, "Invalid Job Query Schema", trace_id);
+    }
+
+    let job_id = _normalize_job_id(raw.job_id || raw.id || "");
+    if (type(job_id) !== "string" || length(job_id) === 0 || !match(job_id, JOB_ID_PATTERN)) {
+        return Fail(ERR.E_AUTH_DENIED, "Invalid Job Query Schema", trace_id);
+    }
+
+    return Success({ job_id: job_id }, 200, trace_id);
+}
+
+/**
+ * Phase 5.5：job.start 唯一合法入参 { "type": "...", "payload": {} }
+ */
+function parse_job_start_envelope(req, trace_id) {
+    let raw = req;
+
+    if (type(req) === "string") {
+        let s = trim(req);
+        if (length(s) === 0) {
+            return Fail(ERR.E_AUTH_DENIED, "Invalid Job Start Schema", trace_id);
+        }
+        try {
+            raw = json(s);
+        } catch (e) {
+            return Fail(ERR.E_AUTH_DENIED, "Invalid Job Start Schema", trace_id);
+        }
+    } else if (req && req.args != null) {
+        raw = req.args;
+    } else if (req && (req.type || req.job_type)) {
+        raw = req;
+    } else {
+        raw = req || {};
+    }
+
+    if (type(raw) !== "object" && type(raw) !== "array") {
+        return Fail(ERR.E_AUTH_DENIED, "Invalid Job Start Schema", trace_id);
+    }
+
+    let job_type = raw.type || raw.job_type || "";
+    let payload = raw.payload;
+    if (payload == null) payload = {};
+    if (type(payload) !== "object" && type(payload) !== "array") {
+        payload = {};
+    }
+
+    if (type(job_type) !== "string" || length(trim(job_type)) === 0) {
+        return Fail(ERR.E_AUTH_DENIED, "Invalid Job Start Schema", trace_id);
+    }
+
+    return Success({ type: trim(job_type), payload: payload }, 200, trace_id);
+}
+
 function _read_state(id) {
     let path = _get_job_path(id);
     if (!path) return null;
@@ -83,7 +186,7 @@ function _read_state(id) {
 const JobManager = {
     dispatch: function(job_type, payload_obj, trace_id) {
         if (!JOB_TYPES[job_type]) {
-            return Fail(ERR.E_AUTH_DENIED, "Illegal Job Type dispatch attempt: " + job_type, trace_id);
+            return Fail(ERR.E_AUTH_DENIED, "Invalid Job Type: " + (job_type || "(missing)"), trace_id);
         }
 
         // ⭐ 补丁对齐：使用 Trace 引擎统一生成
@@ -122,6 +225,15 @@ const JobManager = {
     },
 
     status: function(job_id, trace_id) {
+        let norm = parse_job_query_envelope(
+            (type(job_id) === "string" && match(trim(job_id), JOB_ID_PATTERN))
+                ? { job_id: job_id }
+                : job_id,
+            trace_id
+        );
+        if (!norm.ok) return norm;
+        job_id = norm.data.job_id;
+
         let state_obj = _read_state(job_id);
         if (!state_obj) {
             return Fail(ERR.E_SYSTEM_BUSY, "Job state not found for ID: " + job_id, trace_id);
@@ -175,11 +287,18 @@ const JobManager = {
     }
 };
 
-// 包装器暴露，对齐标准契约
 function dispatch(type, payload, tid) { return JobManager.dispatch(type, payload, tid); }
 function get_status(id, tid) { return JobManager.status(id, tid); }
 function get(id, tid) { return JobManager.status(id, tid); }
 function transition(id, ns, p, err, tid) { return JobManager.transition(id, ns, p, err, tid); }
 
-// 🚨 铁律 1: 文件末尾统一导出
-export { dispatch, get_status, get, transition, JobManager, STATE_ENUM };
+export {
+    dispatch,
+    get_status,
+    get,
+    transition,
+    JobManager,
+    STATE_ENUM,
+    parse_job_start_envelope,
+    parse_job_query_envelope
+};

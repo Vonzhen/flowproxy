@@ -20,6 +20,14 @@
 'require flowproxy.observer as observer';
 
 // --- [ 子模块1：辅助与解析引擎 ] ---
+function saveAndApplyFlowProxy(map) {
+    return map.save(null, true).then(() => {
+        return ui.changes.apply(true);
+    }).then(() => {
+        return observer.execute('apply_config', { source: 'manual' }, _('Applying FlowProxy configuration'));
+    });
+}
+
 function allowInsecureConfirm(ev, _section_id, value) {
     if (value === '1' && !confirm(_('Are you sure to allow insecure?')))
         ev.target.firstElementChild.checked = null;
@@ -1033,6 +1041,10 @@ function renderNodeSettings(section, data, features, main_node, routing_mode) {
 
 // --- [ 子模块3：主视图流转与交互调度 ] ---
 return view.extend({
+    handleSaveApply() {
+        return saveAndApplyFlowProxy(this.map);
+    },
+
     load() {
         return Promise.all([
             uci.load('flowproxy'),
@@ -1071,106 +1083,72 @@ return view.extend({
         }
 
         m = new form.Map('flowproxy', _('Edit nodes'));
+        this.map = m;
 
         s = m.section(form.NamedSection, 'subscription', 'flowproxy');
 
         /* === Subscriptions settings start === */
         s.tab('subscription', '订阅设置');
+        s.tab('subscription_manage', '\u8ba2\u9605\u7ba1\u7406');
 
         /* 🚨 终极修复 1: 弃用危险的 <img onerror> XSS 注入，采用标准的安全 DOM 注入钩子 */
         o = s.taboption('subscription', form.DummyValue, '_ui_optimization');
         o.renderWidget = function(section_id, option_index, cfgvalue) {
-            let hookContainer = E('div', { id: 'fp-ui-opt-hook', style: 'display:none;' });
-            
-            // 使用原生 CSS 注入
             let style = E('style', {}, `
                 #cbi-flowproxy-subscription-_ui_optimization { display: none !important; }
-                #cbi-flowproxy-subscription-_airports { max-width: none !important; width: 100%; }
                 .fp-native-title { margin-top: 10px !important; margin-bottom: 15px !important; border: none !important; }
             `);
-            hookContainer.appendChild(style);
 
-            // 构造安全的闭包运行器
             let script = E('script', { type: 'text/javascript' }, `
                 (function() {
-                    function optimizeUI() {
-                        let divider = document.getElementById('cbi-flowproxy-subscription-_divider_main');
-                        if (!divider) return false;
-                        if (document.querySelector('.fp-layout-row')) return true;
-
-                        let row = document.createElement('div');
-                        row.className = 'fp-layout-row';
-                        row.style.display = 'flex';
-                        row.style.gap = '50px';
-                        row.style.alignItems = 'flex-start';
-                        row.style.width = '100%';
-
-                        let leftCol = document.createElement('div');
-                        leftCol.style.flex = '1'; leftCol.style.minWidth = '0';
-
-                        let rightCol = document.createElement('div');
-                        rightCol.style.flex = '1'; rightCol.style.minWidth = '0';
-
-                        row.appendChild(leftCol);
-                        row.appendChild(rightCol);
-
-                        let leftIds = ['_left_title', 'auto_update', 'auto_update_time', 'update_via_proxy', 'filter_nodes', 'filter_keywords', 'user_agent', 'allow_insecure', 'packet_encoding'];
-                        let rightIds = ['_right_title', 'global_regions'];
-
-                        leftIds.forEach(id => {
-                            let el = document.getElementById('cbi-flowproxy-subscription-' + id);
-                            if (el) leftCol.appendChild(el);
-                        });
-
-                        rightIds.forEach(id => {
-                            let el = document.getElementById('cbi-flowproxy-subscription-' + id);
-                            if (el) rightCol.appendChild(el);
-                        });
-
-                        divider.parentNode.insertBefore(row, divider);
-
+                    function moveSubscriptionActions() {
                         let airportsSection = document.getElementById('cbi-flowproxy-subscription-_airports');
-                        if (airportsSection) {
-                            let createRow = airportsSection.querySelector('.cbi-section-create');
-                            if (createRow) {
-                                createRow.style.display = 'flex';
-                                createRow.style.gap = '12px';
-                                createRow.style.alignItems = 'center';
-                                createRow.style.flexWrap = 'wrap';
-                                createRow.style.marginTop = '10px';
+                        if (!airportsSection || airportsSection.dataset.fpActionsMoved === '1')
+                            return !!airportsSection;
 
-                                let btnSave = document.querySelector('#cbi-flowproxy-subscription-_save_subscriptions button, #cbi-flowproxy-subscription-_save_subscriptions input[type="button"]');
-                                let btnUpdate = document.querySelector('#cbi-flowproxy-subscription-_update_subscriptions button, #cbi-flowproxy-subscription-_update_subscriptions input[type="button"]');
-                                let btnRebuild = document.querySelector('#cbi-flowproxy-subscription-_rebuild_groups button, #cbi-flowproxy-subscription-_rebuild_groups input[type="button"]');
-                                let btnRemove = document.querySelector('#cbi-flowproxy-subscription-_remove_subscriptions button, #cbi-flowproxy-subscription-_remove_subscriptions input[type="button"]');
+                        let createRow = airportsSection.querySelector('.cbi-section-create');
+                        if (!createRow)
+                            return false;
 
-                                if (btnSave) createRow.appendChild(btnSave);
-                                if (btnUpdate) createRow.appendChild(btnUpdate);
-                                if (btnRebuild) createRow.appendChild(btnRebuild);
-                                if (btnRemove) createRow.appendChild(btnRemove);
+                        createRow.style.display = 'flex';
+                        createRow.style.gap = '10px';
+                        createRow.style.alignItems = 'center';
+                        createRow.style.flexWrap = 'wrap';
 
-                                ['#cbi-flowproxy-subscription-_save_subscriptions',
-                                 '#cbi-flowproxy-subscription-_update_subscriptions',
-                                 '#cbi-flowproxy-subscription-_rebuild_groups',
-                                 '#cbi-flowproxy-subscription-_remove_subscriptions'].forEach(id => {
-                                    let el = document.querySelector(id);
-                                    if (el) el.style.display = 'none';
-                                });
-                            }
-                        }
+                        [
+                            '_save_subscriptions',
+                            '_update_subscriptions',
+                            '_rebuild_groups',
+                            '_remove_subscriptions'
+                        ].forEach(function(id) {
+                            let holder = document.getElementById('cbi-flowproxy-subscription-' + id);
+                            if (!holder)
+                                return;
+
+                            let button = holder.querySelector('button, input[type="button"]');
+                            if (button)
+                                createRow.appendChild(button);
+
+                            holder.style.display = 'none';
+                        });
+
+                        airportsSection.dataset.fpActionsMoved = '1';
                         return true;
                     }
 
-                    if (!optimizeUI()) {
-                        let interval = setInterval(() => {
-                            if (optimizeUI()) clearInterval(interval);
+                    if (!moveSubscriptionActions()) {
+                        let interval = window.setInterval(function() {
+                            if (moveSubscriptionActions())
+                                window.clearInterval(interval);
                         }, 200);
-                        setTimeout(() => clearInterval(interval), 3000); 
+                        window.setTimeout(function() {
+                            window.clearInterval(interval);
+                        }, 3000);
                     }
                 })();
             `);
-            hookContainer.appendChild(script);
-            return hookContainer;
+
+            return E('div', { style: 'display:none;' }, [ style, script ]);
         };
 
         o = s.taboption('subscription', form.DummyValue, '_left_title', '');
@@ -1225,7 +1203,7 @@ return view.extend({
         o.rawhtml = true;
         o.default = '<hr style="margin: 10px 0 30px 0; border: 0; border-top: 1px dashed #ccc;" />';
 
-        o = s.taboption('subscription', form.SectionValue, '_airports', form.GridSection, 'subscription_airport',
+        o = s.taboption('subscription_manage', form.SectionValue, '_airports', form.GridSection, 'subscription_airport',
             '订阅管理 (Airports Management)',
             '在此管理您的订阅。支持<b>拖拽排序</b>，排序决定底层节点组的命名后缀（如 hk01, hk02）。');
         o.subsection.addremove = true;
@@ -1260,23 +1238,33 @@ return view.extend({
                 'click': (ev) => {
                     ev.preventDefault();
                     ev.stopPropagation();
-                    observer.execute('update_subscriptions', { airport_id: section_id }, '🔄 正在更新单个订阅');
+                    let map = this.map;
+                    return map.save(null, true).then(() => {
+                        ui.changes.apply(true);
+                        let via = uci.get('flowproxy', 'subscription', 'update_via_proxy') || '0';
+                        return observer.execute('update_subscriptions', { airport_id: section_id, update_via_proxy: via }, '🔄 正在更新单个订阅');
+                    });
                 }
             }, '更新订阅');
         };
 
-        o = s.taboption('subscription', form.Button, '_save_subscriptions', '保存订阅');
+        o = s.taboption('subscription_manage', form.Button, '_save_subscriptions', '保存订阅');
         o.inputstyle = 'apply';
         o.onclick = function() { return this.map.save(null, true).then(() => { ui.changes.apply(true); }); }
 
-        o = s.taboption('subscription', form.Button, '_update_subscriptions', '更新全部订阅');
+        o = s.taboption('subscription_manage', form.Button, '_update_subscriptions', '更新全部订阅');
         o.inputstyle = 'apply';
         o.onclick = function(ev) {
             ev.preventDefault();
-            observer.execute('update_subscriptions', { scope: 'all' }, '🔄 全局订阅更新');
+            let map = this.map;
+            return map.save(null, true).then(() => {
+                ui.changes.apply(true);
+                let via = uci.get('flowproxy', 'subscription', 'update_via_proxy') || '0';
+                return observer.execute('update_subscriptions', { scope: 'all', update_via_proxy: via }, '🔄 全局订阅更新');
+            });
         };
 
-        o = s.taboption('subscription', form.Button, '_rebuild_groups', '⚡ 极速重组本地节点组');
+        o = s.taboption('subscription_manage', form.Button, '_rebuild_groups', '⚡ 极速重组本地节点组');
         o.inputstyle = 'action';
         o.inputtitle = '重组本地节点组';
         o.onclick = function(ev) {
@@ -1284,7 +1272,7 @@ return view.extend({
             observer.execute('rebuild_groups', {}, '⚡ 极速重组节点组');
         };
 
-        o = s.taboption('subscription', form.Button, '_remove_subscriptions', '移除全部订阅节点');
+        o = s.taboption('subscription_manage', form.Button, '_remove_subscriptions', '移除全部订阅节点');
         o.inputstyle = 'reset';
         // 🚨 终极修复 3: 高效就地切除，避免内存大数组溢出
         o.onclick = function() {
