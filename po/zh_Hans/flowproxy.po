@@ -1,4 +1,4 @@
-# --- [ FlowProxy | 国际化字典模块 | v1.1 ] ---
+﻿# --- [ FlowProxy | 国际化字典模块 | v1.1 ] ---
 # 功能：提供前端界面的多语言（简体中文）映射
 # 职责：隔离硬编码文本，提供准确的系统工程隐喻与增量翻译
 
@@ -1621,7 +1621,7 @@ msgid ""
 msgstr "支持 UDP、TCP、DoH、DoQ、DoT。如未指定则使用 TCP 协议。"
 
 msgid "System"
-msgstr "系统"
+msgstr "系统设置"
 
 msgid "System DNS"
 msgstr "系统 DNS"
@@ -2142,3 +2142,420 @@ msgstr "有效端口值"
 msgid "valid uuid"
 msgstr "有效 uuid"
 
+
+# --- [ Dashboard 控制塔 ] ---
+
+msgid "Dashboard"
+msgstr "Dashboard 控制塔"
+
+msgid "Desired State"
+msgstr "期望状态"
+
+msgid "Running State"
+msgstr "运行状态"
+
+msgid "Health"
+msgstr "健康状态"
+
+msgid "Last Apply"
+msgstr "最近应用"
+
+msgid "Routing Runtime"
+msgstr "路由运行态"
+
+msgid "DNS Runtime"
+msgstr "DNS 运行态"
+
+msgid "proxy_mode"
+msgstr "代理模式"
+
+msgid "routing_mode"
+msgstr "路由模式"
+
+msgid "default_outbound"
+msgstr "默认出站"
+
+msgid "default_dns"
+msgstr "默认 DNS"
+
+msgid "sing-box process"
+msgstr "sing-box 进程"
+
+msgid "run.json valid"
+msgstr "run.json 有效"
+
+msgid "running mode"
+msgstr "运行模式"
+
+msgid "mixed port"
+msgstr "mixed 端口"
+
+msgid "dns port"
+msgstr "DNS 端口"
+
+msgid "overall"
+msgstr "总体"
+
+msgid "dataplane"
+msgstr "数据面"
+
+msgid "failed checks"
+msgstr "失败检查"
+
+msgid "warnings"
+msgstr "警告"
+
+msgid "last observed"
+msgstr "最近观测"
+
+msgid "last result"
+msgstr "最近结果"
+
+msgid "updated_at"
+msgstr "更新时间"
+
+msgid "degraded_reason"
+msgstr "降级原因"
+
+msgid "next action"
+msgstr "下一步"
+
+msgid "Default DNS"
+msgstr "默认 DNS"
+
+msgid "Routing Rules Summary"
+msgstr "路由规则摘要"
+
+msgid "DNS Rules Summary"
+msgstr "DNS 规则摘要"
+
+msgid "rule name"
+msgstr "规则名称"
+
+msgid "server name"
+msgstr "服务器名称"
+
+msgid "server/outbound"
+msgstr "DNS 服务器/出站"
+
+msgid "%d rules total - %d enabled"
+msgstr "共 %d 条规则，%d 条启用"
+
+msgid "%d DNS servers total - %d DNS rules total"
+msgstr "共 %d 个 DNS 服务器，%d 条 DNS 规则"
+
+msgid "View in Client"
+msgstr "前往 Client"
+
+msgid "api unavailable"
+msgstr "API 不可用"
+
+msgid "healthy"
+msgstr "健康"
+
+msgid "degraded"
+msgstr "降级"
+
+msgid "broken"
+msgstr "异常"
+
+msgid "invalid"
+msgstr "无效"
+
+msgid "unknown"
+msgstr "未知"
+
+msgid "yes"
+msgstr "是"
+
+msgid "no"
+msgstr "否"
+
+msgid "enabled"
+msgstr "已启用"
+
+msgid "disabled"
+msgstr "已禁用"
+
+msgid "Timeout"
+msgstr "超时"
+
+msgid "No data"
+msgstr "无数据"
+
+msgid "Reject / Block"
+msgstr "拒绝 / 阻断"
+
+msgid "Hijack DNS"
+msgstr "劫持 DNS"
+
+# --- [ Client 页面补充 ] ---
+
+msgid "Quick guide"
+msgstr "快速引导"
+
+msgid "Import the smart DNS rule template as a base rule set."
+msgstr "导入智能 DNS 规则模板作为基础规则集。"
+
+msgid "Generate evaluate template"
+msgstr "生成 evaluate 模板"
+
+msgid "Generate the smart DNS base rules now? Move the new rules to the bottom after generation."
+msgstr "现在生成智能 DNS 基础规则吗？生成后请将新规则移动到底部。"
+
+msgid "Template generated. The page will reload."
+msgstr "模板已生成，页面将重新加载。"
+
+msgid "Rule set management moved"
+msgstr "规则集管理已迁移"
+
+msgid "Rule set definitions are now managed in Resources."
+msgstr "规则集定义现在已迁移到 Resources 页面管理。"
+
+msgid "Client rules can still reference enabled rule sets from their rule editors."
+msgstr "Client 规则仍可在规则编辑器中引用已启用的规则集。"
+
+msgid "Open Resources"
+msgstr "打开 Resources"
+
+msgid "Panel"
+msgstr "面板"
+
+# --- [ Resources 页面 ] ---
+
+msgid "Resources"
+msgstr "资源管理"
+
+msgid "Ruleset Settings"
+msgstr "规则集设置"
+
+msgid "Ruleset List"
+msgstr "规则集列表"
+
+msgid "IP / Domain Resources"
+msgstr "IP / 域名资源"
+
+msgid "Resource management"
+msgstr "资源管理"
+
+msgid "Rulesets are managed here and referenced by Client routing or DNS rules."
+msgstr "规则集在这里管理，并由 Client 的路由规则或 DNS 规则引用。"
+
+msgid "Mirror base URL"
+msgstr "镜像基础 URL"
+
+msgid "Base URL used to download public rule assets."
+msgstr "用于下载公共规则资源的基础 URL。"
+
+msgid "Private repository URL"
+msgstr "私有仓库 URL"
+
+msgid "Optional URL prefix used to download private SRS assets."
+msgstr "用于下载私有 SRS 资源的可选 URL 前缀。"
+
+msgid "Automatic ruleset update"
+msgstr "自动更新规则集"
+
+msgid "Schedule background ruleset update for this resource group."
+msgstr "为该资源组安排后台规则集更新。"
+
+msgid "Daily update time"
+msgstr "每日更新时间"
+
+msgid "China domain list version"
+msgstr "国内域名列表版本"
+
+# --- [ System 页面 ] ---
+
+msgid "Telegram"
+msgstr "Telegram"
+
+msgid "Kernel Check"
+msgstr "内核检查"
+
+msgid "Version"
+msgstr "版本"
+
+msgid "Enable Telegram notifications"
+msgstr "启用 Telegram 通知"
+
+msgid "Global notification settings used by FlowProxy jobs and health events."
+msgstr "FlowProxy 任务和健康事件使用的全局通知设置。"
+
+msgid "Router name"
+msgstr "路由器名称"
+
+msgid "Used to distinguish this device in notification messages."
+msgstr "用于在通知消息中区分此设备。"
+
+msgid "Home router"
+msgstr "家庭路由器"
+
+msgid "Notification policy"
+msgstr "通知策略"
+
+msgid "Always notify"
+msgstr "始终通知"
+
+msgid "Notify failures only"
+msgstr "仅失败时通知"
+
+msgid "Bot Token"
+msgstr "Bot Token"
+
+msgid "Chat ID"
+msgstr "Chat ID"
+
+msgid "Global GitHub API token used by FlowProxy when accessing GitHub APIs."
+msgstr "FlowProxy 访问 GitHub API 时使用的全局 GitHub API token。"
+
+msgid "Sing-box Kernel Check"
+msgstr "sing-box 内核检查"
+
+msgid "Readonly check only. FlowProxy will not download, install, replace sing-box, or restart services."
+msgstr "仅执行只读检查。FlowProxy 不会下载、安装、替换 sing-box，也不会重启服务。"
+
+msgid "Current version"
+msgstr "当前版本"
+
+msgid "Stable version"
+msgstr "稳定版"
+
+msgid "Beta version"
+msgstr "测试版"
+
+msgid "Checking..."
+msgstr "检查中..."
+
+msgid "Checking GitHub release information..."
+msgstr "正在检查 GitHub release 信息..."
+
+msgid "Kernel check completed. No download or restart was performed."
+msgstr "内核检查已完成。未执行下载或重启。"
+
+msgid "Open release page"
+msgstr "打开 release 页面"
+
+msgid "Release page is not provided by this readonly check."
+msgstr "当前只读检查未提供 release 页面。"
+
+msgid "Kernel version check failed: "
+msgstr "内核版本检查失败："
+
+msgid "Check again"
+msgstr "重新检查"
+
+msgid "not checked"
+msgstr "未检查"
+
+msgid "not returned"
+msgstr "未返回"
+
+msgid "Version summary"
+msgstr "版本摘要"
+
+msgid "backend RPC"
+msgstr "后端 RPC"
+
+msgid "unavailable"
+msgstr "不可用"
+
+msgid "available"
+msgstr "可用"
+
+msgid "process running"
+msgstr "进程运行"
+
+msgid "config valid"
+msgstr "配置有效"
+
+msgid "FlowProxy frontend"
+msgstr "FlowProxy 前端"
+
+msgid "installed"
+msgstr "已安装"
+
+# --- [ FlowProxy 菜单 ] ---
+
+msgid "Resources Settings"
+msgstr "资源设置"
+
+msgid "System Settings"
+msgstr "系统设置"
+
+msgid "Diagnostics Settings"
+msgstr "诊断设置"
+
+# --- [ Diagnostics 页面 ] ---
+
+msgid "Diagnostics"
+msgstr "诊断"
+
+msgid "Health Detail"
+msgstr "健康详情"
+
+msgid "Runtime Artifacts"
+msgstr "运行时产物"
+
+msgid "Logs"
+msgstr "日志"
+
+msgid "Network State"
+msgstr "网络状态"
+
+msgid "Not loaded."
+msgstr "未加载。"
+
+msgid "Loading..."
+msgstr "加载中..."
+
+msgid "Error: "
+msgstr "错误："
+
+msgid "exists"
+msgstr "存在"
+
+msgid "not found"
+msgstr "未找到"
+
+msgid "truncated"
+msgstr "已截断"
+
+msgid "ok"
+msgstr "正常"
+
+msgid "valid"
+msgstr "有效"
+
+msgid "log"
+msgstr "日志"
+
+msgid "Log type"
+msgstr "日志类型"
+
+msgid "FlowProxy system"
+msgstr "FlowProxy 系统"
+
+msgid "Job worker"
+msgstr "任务 worker"
+
+msgid "Refresh runtime artifacts"
+msgstr "刷新运行时产物"
+
+msgid "Refresh logs"
+msgstr "刷新日志"
+
+msgid "Refresh network state"
+msgstr "刷新网络状态"
+
+msgid "sing-box check readonly"
+msgstr "sing-box 只读检查"
+
+msgid "sing-box check"
+msgstr "sing-box 检查"
+
+msgid "Checks the existing run.json only. It does not generate, apply, or restart anything."
+msgstr "仅检查现有 run.json。不会生成配置、应用配置或重启服务。"
+
+msgid "Run readonly check"
+msgstr "运行只读检查"
