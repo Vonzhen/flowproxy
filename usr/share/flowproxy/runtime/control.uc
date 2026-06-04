@@ -9,7 +9,7 @@
 push(REQUIRE_SEARCH_PATH, "/usr/share/ucode/*.uc");
 push(REQUIRE_SEARCH_PATH, "/usr/share/ucode/*/init.uc");
 
-import { access } from 'fs';
+import { access, stat } from 'fs';
 import { PATH, BIN } from 'flowproxy.core.constants';
 import { init as gen_trace_id } from 'flowproxy.core.trace';
 import { log } from 'flowproxy.core.logger';
@@ -22,6 +22,7 @@ import { RuntimeOrchestrator } from 'flowproxy.runtime.runtime';
 const PATH_APPLY_MARKER = sprintf("%s/apply.marker", PATH.RUNTIME);
 const PATH_CANDIDATE_CONFIG = sprintf("%s/sing-box-run.candidate.json", PATH.RUNTIME);
 const PATH_FAILED_CONFIG_DIR = sprintf("%s/failed", PATH.RUNTIME);
+const APPLY_MARKER_STALE_SEC = 300;
 
 function _safe_artifact_id(trace_id) {
     let raw = trace_id || sprintf("%d", time());
@@ -66,6 +67,31 @@ function _commit_candidate_if_present(trace_id, must_generate) {
     }
 
     return ExecSafe(BIN.MV, ["-f", PATH_CANDIDATE_CONFIG, PATH.RUN_JSON], null, trace_id);
+}
+
+function _fresh_apply_marker() {
+    if (!access(PATH_APPLY_MARKER)) return false;
+
+    let st = stat(PATH_APPLY_MARKER);
+    if (!st || !st.mtime) return false;
+
+    return (time() - st.mtime) <= APPLY_MARKER_STALE_SEC;
+}
+
+function _can_reuse_apply_marker(trace_id) {
+    if (!_fresh_apply_marker()) {
+        if (access(PATH_APPLY_MARKER)) {
+            log(trace_id, 'WARN', 'CONTROL', 'stale apply.marker ignored; forcing candidate generation');
+        }
+        return false;
+    }
+
+    if (!access(PATH.RUN_JSON) && !access(PATH_CANDIDATE_CONFIG)) {
+        log(trace_id, 'WARN', 'CONTROL', 'apply.marker exists without run.json/candidate; forcing candidate generation');
+        return false;
+    }
+
+    return true;
 }
 
 function _lifecycle_reason(cmd, trace_id) {
@@ -120,7 +146,7 @@ function main() {
     let gc_policy = gc_policy_arg || "auto";
     log(trace_id, 'INFO', 'CONTROL', sprintf('control command=%s reason=%s gc_policy=%s', cmd, reason, gc_policy));
 
-    let has_apply_marker = access(PATH_APPLY_MARKER);
+    let has_apply_marker = _can_reuse_apply_marker(trace_id);
     let lock_handle = null;
 
     if (!has_apply_marker) {

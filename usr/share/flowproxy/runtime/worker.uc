@@ -476,7 +476,10 @@ function _handle_watchdog_report(job_id, payload) {
 function _handle_maintenance_logrotate(job_id, payload) {
     logrotate();
     Log('WORKER', 'INFO', 'Log archive maintenance completed.', job_id);
-    return Success({ msg: "Log maintenance complete" }, 200, job_id);
+    return Success({
+        maintenance_success: true,
+        msg: "日志归档完成"
+    }, 200, job_id);
 }
 
 const HANDLERS = {
@@ -524,7 +527,7 @@ function main(job_id) {
             let err_msg = "E_CONTRACT_VIOLATION: Handler missing for contract job -> " + safe_type;
             Log('WORKER', 'ERROR', err_msg, job_id);
             transition(job_id, STATE_ENUM.FAIL, current_job.progress, err_msg, job_id);
-            _send_telegram_best_effort(safe_type, "fail", err_msg, job_id);
+            _send_telegram_best_effort(safe_type, "fail", notification_summary(safe_type, "fail", { detail: err_msg }, err_msg), job_id);
             exit(1);
         }
 
@@ -561,17 +564,20 @@ function main(job_id) {
                     reload_detail += " | data=" + sprintf("%.J", reload_res.data);
                 }
                 if (safe_type === "update_subscriptions") {
-                    let msg = ((type(result.data) === 'object' && result.data.msg) ? result.data.msg : "Subscription update completed");
-                    msg += "%0A[WARN] Runtime reload failed after subscription update";
-                    msg += "%0Asubscription_success=true, dataplane_success=false";
-                    msg += "%0Adetail=" + reload_detail;
+                    if (type(result.data) !== 'object') result.data = {};
+                    result.data.runtime_applied = false;
+                    result.data.dataplane_success = false;
+                    result.data.error_stage = "runtime_reload";
+                    result.data.detail = reload_detail;
                     Log('WORKER', 'WARN', "Subscription business succeeded but dataplane reload failed: subscription_success=true dataplane_success=false detail=" + reload_detail, job_id);
                     transition(job_id, STATE_ENUM.SUCCESS, 100, null, job_id);
-                    _send_telegram_best_effort(safe_type, "success", msg, job_id);
+                    _send_telegram_best_effort(safe_type, "success", notification_summary(safe_type, "success", result.data, result.data.msg), job_id);
                     exit(0);
                 }
                 transition(job_id, STATE_ENUM.FAIL, 95, reload_detail, job_id);
-                _send_telegram_best_effort(safe_type, "fail", reload_detail, job_id);
+                let reload_fail_data = (type(reload_res.data) === 'object') ? reload_res.data : {};
+                reload_fail_data.detail = reload_detail;
+                _send_telegram_best_effort(safe_type, "fail", notification_summary(safe_type, "fail", reload_fail_data, reload_detail), job_id);
                 exit(1);
             }
             if (safe_type === "update_subscriptions") {
@@ -625,12 +631,14 @@ function main(job_id) {
             _send_telegram_best_effort(safe_type, notify_status, dynamic_msg, job_id);
         } else {
             transition(job_id, STATE_ENUM.FAIL, current_job.progress, result.detail, job_id);
-            _send_telegram_best_effort(safe_type, "fail", result.detail, job_id);
+            let fail_data = (type(result.data) === 'object') ? result.data : {};
+            fail_data.detail = result.detail || "unknown";
+            _send_telegram_best_effort(safe_type, "fail", notification_summary(safe_type, "fail", fail_data, result.detail), job_id);
         }
     } catch (e) {
         let err_msg = "" + e;
         transition(job_id, STATE_ENUM.FAIL, current_job.progress, "Worker crashed: " + err_msg, job_id);
-        _send_telegram_best_effort(current_job.type, "fail", "Worker crashed: " + err_msg, job_id);
+        _send_telegram_best_effort(current_job.type, "fail", notification_summary(current_job.type, "fail", { detail: "Worker crashed: " + err_msg }, "Worker crashed: " + err_msg), job_id);
     }
 
     exit(0);
