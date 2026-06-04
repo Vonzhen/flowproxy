@@ -11,7 +11,9 @@ import { cursor } from 'uci';
 // 2. [引入基石法则] 遵守铁律 3
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
+import { with_changed } from 'flowproxy.core.module_result';
 import { log } from 'flowproxy.core.logger';
+import { stable_airport_id } from 'flowproxy.core.config_helper';
 
 const UCICONFIG = 'flowproxy';
 
@@ -55,7 +57,7 @@ function task_rebuild_groups(trace_id) {
             }
             
             let wl = type(cfg.top_level_whitelist) === 'array' ? cfg.top_level_whitelist : [cfg.top_level_whitelist || ""];
-            push(airports, { id: cfg['.name'], name: cfg.name || 'Unnamed', rules: rules, whitelist: wl, nodes: {} });
+            push(airports, { id: stable_airport_id(cfg), name: cfg.name || 'Unnamed', rules: rules, whitelist: wl, nodes: {} });
         });
 
         if (length(airports) === 0) {
@@ -151,7 +153,7 @@ function task_rebuild_groups(trace_id) {
         uci.commit(UCICONFIG);
         log(trace_id, 'INFO', 'GROUPS', 'Dynamic Node Groups Generation completed successfully.');
         
-        return Success(true, 200, trace_id);
+        return Success(with_changed(true, {}), 200, trace_id);
 
     } catch(e) {
         // 🚨 遵守铁律 6：隐式捕获防崩溃

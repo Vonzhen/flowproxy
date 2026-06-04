@@ -11,6 +11,7 @@ import { PATH, BIN } from 'flowproxy.core.constants';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
 import { ExecSafe } from 'flowproxy.core.utils';
+import { HealthCheck, dataplane_verify, lifecycle_error_detail } from 'flowproxy.runtime.healthcheck';
 
 function _validate_path(path) {
     if (type(path) !== 'string') return false;
@@ -52,5 +53,58 @@ function check(config_path, ctx, trace_id) {
     }
 }
 
-// 剔除越权的 reload 和 stop，仅暴露 check 契约
-export { check };
+/**
+ * reload/restart 后数据面验收（唯一入口：等待落盘 → 统一 dataplane_verify）
+ */
+function _recoverable_dataplane_gap(dp) {
+    if (!dp) return true;
+    if (dp.process_ok === false) return false;
+    if (dp.route_ok === false || dp.nft_ok === false || dp.tun_ok === false) return true;
+    return false;
+}
+
+function verify_after_reload(trace_id, opts) {
+    opts = opts || {};
+    let min_settle_sec = opts.min_settle_sec != null ? int(opts.min_settle_sec) : 8;
+    let timeout_sec = opts.timeout_sec != null ? int(opts.timeout_sec) : 75;
+    let stable_samples = opts.stable_samples != null ? int(opts.stable_samples) : 2;
+    let allow_transient = opts.allow_transient !== false;
+
+    ExecSafe(BIN.SH, ["-c", "sleep 2"], null, trace_id);
+
+    let settle_until = time() + min_settle_sec;
+    let deadline = time() + timeout_sec;
+    let last_dp = null;
+    let stable_count = 0;
+
+    while (time() < deadline) {
+        let health = HealthCheck.verify({ allow_transient: allow_transient });
+        last_dp = health.dataplane || dataplane_verify(trace_id);
+
+        if (health.ok && !health.transient && !(last_dp && last_dp.transient)) {
+            stable_count++;
+            if (stable_count >= stable_samples && time() >= settle_until) {
+                return last_dp;
+            }
+        } else if (health.transient === true || (last_dp && last_dp.transient)) {
+            stable_count = 0;
+        } else if (allow_transient && time() < settle_until && _recoverable_dataplane_gap(last_dp)) {
+            stable_count = 0;
+        } else if (!_recoverable_dataplane_gap(last_dp)) {
+            last_dp.detail = lifecycle_error_detail(last_dp.detail || "dataplane verify failed");
+            return last_dp;
+        } else {
+            stable_count = 0;
+        }
+
+        ExecSafe(BIN.SH, ["-c", "sleep 1"], null, trace_id);
+    }
+
+    let dp = last_dp || dataplane_verify(trace_id);
+    dp.ok = false;
+    dp.error = dp.error || "dataplane_incomplete";
+    dp.detail = lifecycle_error_detail("dataplane verify timeout after final settling: " + (dp.detail || "unknown"));
+    return dp;
+}
+
+export { check, verify_after_reload };

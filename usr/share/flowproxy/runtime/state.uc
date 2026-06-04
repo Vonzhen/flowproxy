@@ -1,55 +1,87 @@
 /**
- * FlowProxy | runtime/state.uc | v1.1 (Strict Identity Edition)
- * 真相引擎与状态管理器 (SSOT Aligned Edition)
- * 职责：管控执行态配置文件与事务标记，并生成极速无阻塞的系统全景快照。
- * 架构更新：废弃 pidof 模糊探测，引入基于 PID 文件与 /proc/cmdline 的强身份校验。清除正则字面量陷阱。
+ * FlowProxy | runtime/state.uc | v1.2 SSOT State Edition
+ * 真相引擎与状态管理器：HealthCheck 只读镜像 + runtime.state 落盘契约
  */
 
 'use strict';
 
-// 🚨 铁律 5
 import { open as fs_open, stat, readfile } from 'fs';
 import { cursor } from 'uci';
+import { is_service_enabled } from 'flowproxy.core.config_helper';
 
-// 🚨 铁律 3
-import { PATH, BIN } from 'flowproxy.core.constants';
+import { PATH, BIN, DATAPLANE } from 'flowproxy.core.constants';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
-import { ExecSafe } from 'flowproxy.core.utils';
+import { ExecSafe, ensure_dir } from 'flowproxy.core.utils';
 import { log } from 'flowproxy.core.logger';
 
-import { execute_fallback } from 'flowproxy.system.safety';
 import { HealthCheck } from 'flowproxy.runtime.healthcheck';
+import { RuntimeOrchestrator } from 'flowproxy.runtime.runtime';
 
 const PATH_STAGED_CONFIG = sprintf("%s/sing-box-new.json", PATH.RUNTIME);
 const PATH_BACKUP_CONFIG = sprintf("%s/sing-box-backup.json", PATH.RUNTIME);
 const PATH_TXN_MARKER    = sprintf("%s/txn.marker", PATH.RUNTIME);
-const PATH_RUNNING_PID   = PATH.RUNNING_PID;
-const PATH_RUNTIME_STATE = sprintf("%s/runtime.state", PATH.RUNTIME); 
+const PATH_RUNTIME_STATE = DATAPLANE.RUNTIME_STATE; 
 
 const StateManager = {
+
+    read_state: function() {
+        if (!stat(PATH_RUNTIME_STATE)) return {};
+
+        let content = readfile(PATH_RUNTIME_STATE);
+        if (!content) return {};
+
+        try {
+            return json(content) || {};
+        } catch (e) {
+            log(null, 'WARN', 'STATE', 'runtime.state parse failed: ' + ("" + e));
+            return {};
+        }
+    },
 
     /**
      * 写入硬化诊断全息状态 (P3阶段引入)
      * @param {object} payload - { apply_id, desired_generation, actual_generation, last_error, last_repair, degraded_reason }
      */
     record_state: function(payload) {
-        let current = {};
-        if (stat(PATH_RUNTIME_STATE)) {
-            let content = readfile(PATH_RUNTIME_STATE);
-            if (content) current = json(content) || {};
-        }
-        
+        ensure_dir(PATH.RUNTIME);
+
+        let current = this.read_state();
+
         for (let k in payload) {
-            current[k] = payload[k];
+            if (k === "watchdog" && type(payload[k]) === "object") {
+                current.watchdog = current.watchdog || {};
+                for (let wk in payload[k]) {
+                    current.watchdog[wk] = payload[k][wk];
+                }
+            } else {
+                current[k] = payload[k];
+            }
         }
+
+        current.watchdog = current.watchdog || {};
+        current.watchdog.last_state = current.watchdog.last_state || "healthy";
+        current.watchdog.last_notified_state = current.watchdog.last_notified_state || "healthy";
         current.updated_at = time();
 
         let fd = fs_open(PATH_RUNTIME_STATE, "w");
-        if (fd) {
-            fd.write(sprintf("%.J", current));
-            fd.close();
+        if (!fd) {
+            log(null, 'CRIT', 'STATE', sprintf(
+                'record_state failed: cannot open %s for write', PATH_RUNTIME_STATE
+            ));
+            return;
         }
+        fd.write(sprintf("%.J", current));
+        fd.close();
+    },
+
+    reset_watchdog_baseline: function(state) {
+        this.record_state({
+            watchdog: {
+                last_state: state || "healthy",
+                last_notified_state: state || "healthy"
+            }
+        });
     },
     
     write_staged: function(json_str, trace_id) {
@@ -106,25 +138,49 @@ const StateManager = {
         return Success(true, 200, job_id);
     },
     
+    /** @deprecated Phase4：仅 system_rollback Job → Runtime；禁止后台自治调用 */
     rollback_and_fallback: function(trace_id) {
-        log(trace_id, "WARN", "STATE", "Triggering state rollback and safety fallback procedures...");
-        if (stat(PATH_BACKUP_CONFIG)) { 
-            ExecSafe(BIN.MV, ["-f", PATH_BACKUP_CONFIG, PATH.RUN_JSON], null, trace_id); 
-        }
-        this.cleanup_staged(trace_id); 
-        
-        return execute_fallback(trace_id);
+        log(trace_id, "WARN", "STATE", "Delegating rollback to RuntimeOrchestrator...");
+        this.cleanup_staged(trace_id);
+        let bak = stat(PATH_BACKUP_CONFIG) ? PATH_BACKUP_CONFIG : null;
+        return RuntimeOrchestrator.rollback_commit(trace_id, bak);
     },
 
-    sync_uci_nodes: function(airport_id, new_nodes, trace_id) {
+    sync_uci_nodes: function(airport_id, new_nodes, trace_id, legacy_airport_ids) {
         if (!new_nodes || length(new_nodes) === 0) return Success(0, 200, trace_id); 
 
         let u = cursor();
         u.load("flowproxy");
         let old_nodes_map = {};
+        let incoming_nodes_map = {};
+        let legacy_map = {};
+        let active_legacy_map = {};
+
+        for (let i = 0; i < length(new_nodes); i++) {
+            if (new_nodes[i] && new_nodes[i].id) incoming_nodes_map[new_nodes[i].id] = true;
+        }
+
+        if (type(legacy_airport_ids) === 'array') {
+            for (let i = 0; i < length(legacy_airport_ids); i++) {
+                if (legacy_airport_ids[i]) legacy_map[legacy_airport_ids[i]] = true;
+            }
+        }
+
+        u.foreach("flowproxy", "subscription_airport", (s) => {
+            if (s['.name']) active_legacy_map[s['.name']] = true;
+        });
 
         u.foreach("flowproxy", "node", (s) => {
-            if (s.airport_id === airport_id) { old_nodes_map[s['.name']] = true; }
+            let old_airport_id = s.airport_id || "";
+            let is_orphan_legacy = match(old_airport_id, regexp('^cfg[0-9a-fA-F]+$')) && !active_legacy_map[old_airport_id];
+            if (
+                old_airport_id === airport_id ||
+                legacy_map[old_airport_id] ||
+                incoming_nodes_map[s['.name']] ||
+                is_orphan_legacy
+            ) {
+                old_nodes_map[s['.name']] = true;
+            }
         });
 
         for (let i = 0; i < length(new_nodes); i++) {
@@ -162,22 +218,42 @@ const StateManager = {
 
     snapshot: function(trace_id) {
         try {
-            let u = cursor();
-            u.load("flowproxy");
-            
-            let def_out = u.get("flowproxy", "routing", "default_outbound");
-            let is_enabled = def_out != null && def_out !== "disabled" && def_out !== "nil";
+            let en_res = is_service_enabled(trace_id);
+            let is_enabled = en_res.ok && en_res.data;
 
             // 🚨 彻底抛弃原有的模糊 netstat 扫描，直接呼叫专职的只读质检员
             let health_info = HealthCheck.verify();
 
+            // process 维度：failed 含 "process" 即未运行；index() 未找到返回 -1（与 healthcheck 一致）
+            let process_in_failed = index(health_info.failed, "process");
+            let process_running = (process_in_failed < 0) ? true : false;
+            let health_mode = health_info.mode || (health_info.dataplane ? health_info.dataplane.mode : "unknown");
+            let health_mode_source = health_info.mode_source || (health_info.missing ? health_info.missing.mode_source : "unknown");
+            let health_mode_warning = health_info.mode_warning || (health_info.missing ? health_info.missing.mode_warning : "");
+
             let snap = {
-                process: { running: health_info.ok || index(health_info.failed, "pid") === -1 },
+                process: { running: process_running },
                 config: { valid: stat(PATH.RUN_JSON) != null },
                 // 诚实的三态投射：ok 为 true 就是 healthy，否则就是损坏或降级
                 health: { 
                     state: health_info.ok ? "healthy" : (length(health_info.failed) > 2 ? "broken" : "degraded"),
-                    failed: health_info.failed 
+                    failed: health_info.failed,
+                    failed_mode: health_mode,
+                    mode: health_mode,
+                    mode_source: health_mode_source,
+                    mode_warning: health_mode_warning,
+                    missing: health_info.missing || {
+                        mode: health_mode,
+                        mode_source: health_mode_source,
+                        mode_warning: health_mode_warning,
+                        failed: health_info.failed,
+                        items: []
+                    },
+                    dataplane: {
+                        mode: health_mode,
+                        mode_source: health_mode_source,
+                        mode_warning: health_mode_warning
+                    }
                 },
                 ports: { mixed: 5330, dns: 5333 },
                 version: { singbox: "1.x-managed" },
@@ -191,6 +267,8 @@ const StateManager = {
                 let st_content = readfile(PATH_RUNTIME_STATE);
                 if (st_content) snap.diagnostic = json(st_content) || {};
             }
+            snap.diagnostic.current_health_mode = health_mode;
+            snap.diagnostic.current_health_mode_source = health_mode_source;
 
             return Success(snap, 200, trace_id);
             

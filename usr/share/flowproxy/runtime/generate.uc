@@ -15,12 +15,23 @@ import { writefile } from 'fs';
 import { PATH } from 'flowproxy.core.constants';
 import { init as gen_trace_id } from 'flowproxy.core.trace';
 import { log } from 'flowproxy.core.logger';
+import { ensure_dir } from 'flowproxy.core.utils';
 
 import { build_flow_model } from 'flowproxy.model.schema';
 import { validate_model } from 'flowproxy.model.validator';
 import { Adapter } from 'flowproxy.adapter.singbox';
 
 let trace_id = 'SYNC_BOOT_' + gen_trace_id();
+let candidate_path = sprintf("%s/sing-box-run.candidate.json", PATH.RUNTIME);
+
+if (length(ARGV) > 0 && ARGV[0]) {
+    candidate_path = ARGV[0];
+}
+
+if (candidate_path !== sprintf("%s/sing-box-run.candidate.json", PATH.RUNTIME)) {
+    log(trace_id, 'CRIT', 'GATEWAY', 'Illegal candidate output path: ' + candidate_path);
+    exit(1);
+}
 
 log(trace_id, 'INFO', 'GATEWAY', '========================================');
 log(trace_id, 'INFO', 'GATEWAY', 'Synchronous Runtime Generation Started.');
@@ -57,13 +68,14 @@ try {
     }
 
     // [Step 5] 落地为物理文件 (Artifact)
-    let is_ok = writefile(PATH.RUN_JSON, adapter_res.data);
+    ensure_dir(PATH.RUNTIME);
+    let is_ok = writefile(candidate_path, adapter_res.data);
     if (!is_ok) {
-        log(trace_id, 'CRIT', 'GATEWAY', 'Fatal: Failed to write JSON artifact to disk!');
+        log(trace_id, 'CRIT', 'GATEWAY', 'Fatal: Failed to write candidate JSON artifact to disk!');
         exit(1);
     }
 
-    log(trace_id, 'INFO', 'GATEWAY', 'Synchronous generation SUCCESS.');
+    log(trace_id, 'INFO', 'GATEWAY', 'Synchronous candidate generation SUCCESS: ' + candidate_path);
     log(trace_id, 'INFO', 'GATEWAY', '========================================');
     
     // 成功退出，允许 init.d 往下执行

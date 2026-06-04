@@ -1,37 +1,71 @@
 /**
- * FlowProxy | modules/notifier.uc | v1.1 (Refactored)
- * 职责：业务模块层。负责截获任务结果并向 Telegram 下发带轮询容错的格式化告警。
- * 架构防线：引入 Initial Backoff 与 Linear Polling，免疫守护进程异步重启时的“进程空窗期”误报。
+ * FlowProxy | modules/notifier.uc
+ * Role: send worker/runtime supplied notification facts. This module does not
+ * judge runtime health, poll processes, or change job outcomes.
  */
 
 'use strict';
 
-// [Category A] 解构原生库与基石法则
 import { cursor } from 'uci';
-import { PATH, BIN } from 'flowproxy.core.constants';
+
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
-import { ExecSafe, shell_escape } from 'flowproxy.core.utils';
 import { log } from 'flowproxy.core.logger';
+import { fetch_with_policy } from 'flowproxy.core.resource_fetch';
 
-/**
- * 模块对外导出的主接口：下发 Telegram 告警
- * @param {string} trace_id - 贯穿始终的链路 ID
- * @param {string} task_type - 任务类型 (如 update_subscriptions)
- * @param {string} status - 任务状态 (success | fail)
- * @param {string} msg_text - 详细信息
- */
+const TELEGRAM_MAX_TEXT = 3900;
+
+function _plain_text(s) {
+    s = sprintf("%s", s || "");
+    s = replace(s, regexp('<br\\s*/?>', 'g'), "\n");
+    s = replace(s, regexp('<BR\\s*/?>', 'g'), "\n");
+    s = replace(s, regexp('%0A', 'g'), "\n");
+    s = replace(s, regexp('<[^>]+>', 'g'), "");
+    return s;
+}
+
+function _truncate_text(s) {
+    if (length(s) <= TELEGRAM_MAX_TEXT) return s;
+    return substr(s, 0, TELEGRAM_MAX_TEXT - 80) + "\n...[message truncated]";
+}
+
+function _title(task_type, status, loc_name) {
+    let task = task_type || "task";
+    if (task_type === "update_subscriptions") task = "subscription update";
+    else if (task_type === "update_assets") task = "ruleset update";
+    else if (task_type === "update_resources") task = "resource update";
+    else if (task_type === "apply_config") task = "apply config";
+    else if (task_type === "watchdog_report") task = "watchdog report";
+    let status_label = status === "fail" ? "FAIL" : "OK";
+    return sprintf("[%s] %s %s", loc_name || "FlowProxy", status_label, task);
+}
+
+function _http_success(code) {
+    let c = int(trim(code || ""));
+    return c >= 200 && c < 300;
+}
+
+function _safe_body(body) {
+    let s = sprintf("%s", body || "");
+    s = replace(s, "\n", " ");
+    s = replace(s, "\r", " ");
+    s = replace(s, regexp('/bot[0-9]+:[A-Za-z0-9_-]+', 'g'), '/bot<redacted>');
+    if (length(s) > 240) s = substr(s, 0, 240) + "...";
+    return s || "(empty)";
+}
+
 function send_telegram(task_type, status, msg_text, trace_id) {
     try {
         let u = cursor();
         u.load("flowproxy");
-        
+
         let enabled = u.get("flowproxy", "config", "tg_notify_enabled");
         let mode = u.get("flowproxy", "config", "tg_notify_mode");
         let token = trim(u.get("flowproxy", "config", "tg_token") || "");
         let chat_id = trim(u.get("flowproxy", "config", "tg_chat_id") || "");
-        // [Category B] 严格继承 loc_name，保障告警上下文的可追溯性
         let loc_name = trim(u.get("flowproxy", "config", "location_name") || "FlowProxy");
+        let token_had_bot_prefix = index(token, "bot") === 0;
+        if (token_had_bot_prefix) token = substr(token, 3);
 
         if (enabled !== '1' || !token || !chat_id) {
             return Success({ sent: false, reason: "disabled or missing credentials" }, 200, trace_id);
@@ -41,108 +75,147 @@ function send_telegram(task_type, status, msg_text, trace_id) {
             return Success({ sent: false, reason: "fail_only mode active" }, 200, trace_id);
         }
 
-        // [Category B] 格式化安全文本与转义
-        let safe_msg = msg_text || "";
-        // [Category C] Warning: 必须使用 regexp() 沙箱，严禁在此处使用 /.../g 导致进程抛出 Syntax Error
-        safe_msg = replace(safe_msg, regexp('<br>', 'g'), "%0A");
-        safe_msg = replace(safe_msg, regexp('\\n', 'g'), "%0A");
-
-        let final_status = status;
-        let is_sub_task = (task_type === "subscription" || task_type === "update_subscriptions");
-
-        // ============================================================================
-        // 探针轮询与富文本组装区 (Generalized Probe & Payload Structuring)
-        // ============================================================================
-        
-        // [Category A] 幻影标记拦截：解耦任务类型，任何携带挂起标记的任务均触发健康巡检
-        if (match(safe_msg, regexp('\\[RESTART_PENDING\\]'))) {
-            let is_alive = false;
-            let active_pid = "";
-            
-            log(trace_id, 'INFO', 'NOTIFIER', 'Detected [RESTART_PENDING] phantom marker. Entering backoff window (3s)...');
-            system("sleep 3"); 
-
-            log(trace_id, 'INFO', 'NOTIFIER', 'Starting generalized PID polling sequence...');
-            for (let i = 0; i < 10; i++) {
-                let pid_res = ExecSafe(BIN.PIDOF, ["sing-box"], null, trace_id);
-                if (pid_res.ok && pid_res.data && length(trim(pid_res.data.stdout || "")) > 0) {
-                    is_alive = true;
-                    active_pid = trim(pid_res.data.stdout);
-                    log(trace_id, 'INFO', 'NOTIFIER', sprintf('Captured active PID: %s at attempt %d', active_pid, i + 1));
-                    break;
-                }
-                system("sleep 2"); 
-            }
-
-            // [Category B] 依据任务类型与探针终态，精准渲染对齐文本格式
-            if (is_alive) {
-                if (is_sub_task) {
-                    let ok_tail = "⚡ <b>内核状态：</b> 运行中 (PID: " + active_pid + ")%0A🛡️ <b>运行说明：</b> 内存树已重新映射，服务平稳过渡。";
-                    safe_msg = replace(safe_msg, regexp('\\[RESTART_PENDING\\]', 'g'), ok_tail);
-                } else {
-                    safe_msg = replace(safe_msg, regexp('\\[RESTART_PENDING\\]', 'g'), "♻️ <b>服务重启:</b> ✅ 成功 (PID: " + active_pid + ")");
-                }
-            } else {
-                final_status = "fail";
-                if (is_sub_task) {
-                    let err_tail = "💥 <b>故障定性：内核冷启动失败</b> (Timeout: 23s)%0A🔍 <b>探针反馈：</b> 轮询窗口期内未探测到活跃进程。%0A🎯 <b>行动建议：</b> 请立刻登录 OpenWrt 检查底层堆栈。";
-                    safe_msg = replace(safe_msg, regexp('\\[RESTART_PENDING\\]', 'g'), err_tail);
-                } else {
-                    safe_msg = replace(safe_msg, regexp('\\[RESTART_PENDING\\]', 'g'), "♻️ <b>服务重启:</b> ❌ 失败 (探针未捕获到进程，Timeout: 23s)");
-                }
-            }
-        } 
-        // 兜底异常拦截
-        else if (status === "fail" && !match(safe_msg, regexp('服务重启'))) {
-            safe_msg = "⚠️ <b>任务中断或异常</b>%0A━━━━━━━━━━━━━━━━━━%0A原因：" + safe_msg;
-        }
-
-        // ============================================================================
-        // HTTP API 下发区
-        // ============================================================================
-        let title_prefix = "[" + loc_name + "]";
-        if (is_sub_task) {
-            title_prefix += " 📡 <b>订阅管理</b>";
-        } else if (task_type === "ruleset" || task_type === "update_assets") {
-            title_prefix += " 🗂️ <b>资产规则</b>";
-        } else if (task_type === "kernel" || task_type === "update_kernel") {
-            title_prefix += " 🚀 <b>内核管理</b>";
-        } else if (task_type === "apply_config") {
-            title_prefix += " ⚙️ <b>配置部署</b>";
-        }
-
-        let final_text = title_prefix + "%0A" + safe_msg;
+        let final_text = _truncate_text(_title(task_type, status, loc_name) + "\n" + _plain_text(msg_text));
+        let token_present = length(token) > 0;
+        let chat_id_present = length(chat_id) > 0;
+        let parse_mode_sent = "none";
+        log(trace_id, 'INFO', 'NOTIFIER', sprintf(
+            'Dispatching Telegram notification telegram_fields=chat_id,text,disable_web_page_preview parse_mode_sent=%s token_present=%s token_had_bot_prefix=%s chat_id_present=%s chat_id_len=%d text_len=%d payload=plain-urlencoded',
+            parse_mode_sent,
+            token_present ? "true" : "false",
+            token_had_bot_prefix ? "true" : "false",
+            chat_id_present ? "true" : "false",
+            length(chat_id),
+            length(final_text)
+        ));
 
         let api_url = sprintf("https://api.telegram.org/bot%s/sendMessage", token);
-        let curl_args = [
-            "-sk", 
-            "-x", "socks5h://127.0.0.1:5330", // 🚨 核心装甲：强制让 Sing-box 代理 DNS 解析与 TCP 握手，无视运营商投毒！
-            "-X", "POST", api_url,
-            "-d", "chat_id=" + chat_id,
-            "-d", "parse_mode=HTML",
-            "-d", "disable_web_page_preview=true",
-            "-d", "text=" + final_text
-        ];
+        let res = fetch_with_policy(api_url, null, "notifier_api", trace_id, {
+            timeout_sec: 15,
+            method: "POST",
+            insecure: true,
+            fail_on_http: false,
+            extra_args: [
+                "--data-urlencode", "chat_id=" + chat_id,
+                "--data-urlencode", "text=" + final_text,
+                "--data-urlencode", "disable_web_page_preview=true"
+            ],
+            form_data: []
+        });
 
-        log(trace_id, 'INFO', 'NOTIFIER', 'Dispatching formatted Telegram notification...');
-        
-        // 🚨 战术微调：由于通过代理走出国门，将超时时间从 10 秒稍微放宽到 15 秒，增加容错率
-        let res = ExecSafe(BIN.CURL, curl_args, { timeout: 15 }, trace_id);
-
-        if (res.ok) {
+        if (res.ok && _http_success(res.http_code)) {
             return Success({ sent: true }, 200, trace_id);
-        } else {
-            log(trace_id, 'WARN', 'NOTIFIER', 'Failed to send notification: ' + res.detail);
-            return Fail(ERR.E_SYSTEM_BUSY, "Telegram API request failed", trace_id);
         }
 
+        log(trace_id, 'WARN', 'NOTIFIER', sprintf(
+            'Failed to send notification: effective=%s exit=%d http=%s telegram_body=%s telegram_fields=chat_id,text,disable_web_page_preview token_present=%s token_had_bot_prefix=%s chat_id_present=%s chat_id_len=%d text_len=%d parse_mode_sent=%s payload=plain-urlencoded stderr=%s',
+            res.effective_mode || res.effective || "none",
+            res.exit_code || 0,
+            res.http_code || "000",
+            _safe_body(res.response_body || res.stdout || ""),
+            token_present ? "true" : "false",
+            token_had_bot_prefix ? "true" : "false",
+            chat_id_present ? "true" : "false",
+            length(chat_id),
+            length(final_text),
+            parse_mode_sent,
+            res.stderr || res.error || ""
+        ));
+        return Fail(ERR.E_SYSTEM_BUSY, "Telegram API request failed", trace_id);
+
     } catch (e) {
-        // 🚨 铁律 6：隐式异常捕获
         let err_msg = "" + e;
         log(trace_id, 'CRIT', 'NOTIFIER', 'Exception: ' + err_msg);
         return Fail(ERR.E_SYSTEM_BUSY, "Notifier exception: " + err_msg, trace_id);
     }
 }
 
-// 🚨 铁律 1: 文件末尾统一导出
-export { send_telegram };
+function send_telegram_best_effort(task_type, status, msg, trace_id, log_module) {
+    let log_tag = log_module || 'NOTIFIER';
+    try {
+        let tg_res = send_telegram(task_type, status, msg, trace_id);
+        if (!tg_res || !tg_res.ok) {
+            log(trace_id, 'WARN', log_tag, 'Telegram notify failed; job result is unchanged.');
+        }
+        return tg_res;
+    } catch (e) {
+        log(trace_id, 'WARN', log_tag, 'Telegram notify crashed; job result is unchanged: ' + ("" + e));
+        return null;
+    }
+}
+
+function _limit_list(items, max_items) {
+    items = (type(items) === 'array') ? items : [];
+    max_items = max_items || 12;
+    let out = [];
+    for (let i = 0; i < length(items) && i < max_items; i++) {
+        push(out, sprintf("%s", items[i]));
+    }
+    if (length(items) > max_items) push(out, sprintf("...and %d more", length(items) - max_items));
+    return out;
+}
+
+function _append_list(msg, label, items) {
+    items = _limit_list(items, 12);
+    if (length(items) === 0) return msg;
+    msg += "\n" + label + ":";
+    for (let i = 0; i < length(items); i++) msg += "\n- " + items[i];
+    return msg;
+}
+
+function notification_summary(task_type, status, data, fallback_msg) {
+    data = (type(data) === 'object') ? data : {};
+    let updated = (type(data.updated) === 'array') ? data.updated : [];
+    let failed = (type(data.failed) === 'array') ? data.failed : [];
+    let unchanged = (type(data.unchanged) === 'array') ? data.unchanged : [];
+    let failed_airports = (type(data.failed_airports) === 'array') ? data.failed_airports : [];
+    let msg = "";
+
+    if (data.next_action === "manual_apply_required") {
+        return "Manual update completed\nruntime_applied=false\nnext_action=manual_apply_required";
+    }
+
+    if (task_type === "update_subscriptions") {
+        msg = "Task: cron subscription update";
+        msg += sprintf("\nsubscription_success=%s", data.subscription_success === false ? "false" : "true");
+        msg += sprintf("\nsuccess_count=%d", data.success_count || 0);
+        msg += sprintf("\nfailed_count=%d", data.failed_count || length(failed_airports));
+        msg += sprintf("\ntotal_nodes=%d", data.total_nodes || 0);
+        msg += sprintf("\nruntime_applied=%s", data.runtime_applied ? "true" : "false");
+        msg += sprintf("\nrestart_only=%s", data.restart_only ? "true" : "false");
+        msg += sprintf("\nrollback_success=%s", data.rollback_success ? "true" : "false");
+        if (data.error_stage) msg += "\nerror_stage=" + data.error_stage;
+        msg = _append_list(msg, "failed", failed_airports);
+        return msg;
+    }
+
+    if (task_type === "update_assets") {
+        msg = "Task: cron ruleset update";
+        msg += sprintf("\nupdated_count=%d", length(updated));
+        msg += sprintf("\nfailed_count=%d", length(failed));
+        msg += sprintf("\nunchanged_count=%d", length(unchanged));
+        msg += sprintf("\nruntime_applied=%s", data.runtime_applied ? "true" : "false");
+        msg += sprintf("\nrollback_success=%s", data.rollback_success ? "true" : "false");
+        if (data.error_stage) msg += "\nerror_stage=" + data.error_stage;
+        msg = _append_list(msg, "updated", updated);
+        msg = _append_list(msg, "failed", failed);
+        return msg;
+    }
+
+    if (task_type === "update_resources") {
+        msg = "Task: cron resource update";
+        msg += sprintf("\nupdated_count=%d", length(updated));
+        msg += sprintf("\nfailed_count=%d", length(failed));
+        msg += sprintf("\nunchanged_count=%d", length(unchanged));
+        msg += sprintf("\nruntime_applied=%s", data.runtime_applied ? "true" : "false");
+        msg += sprintf("\nrollback_success=%s", data.rollback_success ? "true" : "false");
+        if (data.error_stage) msg += "\nerror_stage=" + data.error_stage;
+        msg = _append_list(msg, "updated", updated);
+        msg = _append_list(msg, "failed", failed);
+        return msg;
+    }
+
+    return fallback_msg || "Task completed";
+}
+
+export { send_telegram, send_telegram_best_effort, notification_summary };

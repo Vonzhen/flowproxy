@@ -11,6 +11,7 @@ import { cursor } from 'uci';
 
 // 🚨 铁律 3: 绝对命名空间寻址
 import { PATH } from 'flowproxy.core.constants';
+import { load_uci_context } from 'flowproxy.core.config_helper';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
 
@@ -36,30 +37,55 @@ function normalize_uuid(u) {
 const U_CONFIG = 'flowproxy';
 const S_INFRA = 'infra';
 const S_MAIN = 'config';
+const S_ROUTING = 'routing';
+
+function strToIntDefault(val, fallback) {
+    let parsed = strToInt(val);
+    return parsed != null ? parsed : fallback;
+}
+
+function strToBoolDefault(val, fallback) {
+    let parsed = strToBool(val);
+    return parsed != null ? parsed : fallback;
+}
+
+function strOrDefault(val, fallback) {
+    if (val == null) return fallback;
+    let s = "" + val;
+    return length(trim(s)) > 0 ? s : fallback;
+}
+
+function get_proxy_mode(u) {
+    let mode = strOrDefault(
+        u.get(U_CONFIG, S_MAIN, 'proxy_mode'),
+        strOrDefault(u.get(U_CONFIG, S_ROUTING, 'proxy_mode'), "redirect_tproxy")
+    );
+    if (mode === "redirect" || mode === "redirect_tproxy") return "redirect_tproxy";
+    if (mode === "redirect_tun" || mode === "tun") return "tun";
+    return mode;
+}
+
+function get_tun_dns_mode(u) {
+    return strOrDefault(u.get(U_CONFIG, S_INFRA, 'tun_dns_mode'), "hijack");
+}
+
+function is_tun_dns_hijack(u, proxy_mode) {
+    return proxy_mode === "tun" && get_tun_dns_mode(u) === "hijack";
+}
 
 /**
  * 组装 Sing-box 入站平面 (Inbounds)
  * 完美复刻 TProxy + Redirect 双擎，向下兼容 UI 混合模式变量
  */
-function build_inbounds(u) {
+function build_base_inbounds(u, snap, proxy_mode) {
     let inbounds = [];
-    let mixed_port = u.get(U_CONFIG, S_INFRA, 'mixed_port');
+    let mixed_port = (snap && snap.mixed_port) ? snap.mixed_port : u.get(U_CONFIG, S_INFRA, 'mixed_port');
     let dns_port = u.get(U_CONFIG, S_INFRA, 'dns_port');
-    let proxy_mode = u.get(U_CONFIG, S_MAIN, 'proxy_mode');
-
     // 基础管理入站
-    if (dns_port) push(inbounds, { type: 'direct', tag: 'dns-in', listen: '::', listen_port: strToInt(dns_port) });
+    if (dns_port && !is_tun_dns_hijack(u, proxy_mode)) push(inbounds, { type: 'direct', tag: 'dns-in', listen: '::', listen_port: strToInt(dns_port) });
     if (mixed_port) push(inbounds, { type: 'mixed', tag: 'mixed-in', listen: '::', listen_port: strToInt(mixed_port), set_system_proxy: false });
     
     // 🚨 核心复刻：依据 UI 变量动态分发 TCP 与 UDP 物理拦截闸门
-    if (match(proxy_mode, /redirect/)) {
-        let redirect_port = u.get(U_CONFIG, S_INFRA, 'redirect_port') || '5331';
-        push(inbounds, { type: 'redirect', tag: 'redirect-in', listen: '::', listen_port: strToInt(redirect_port) });
-    }
-    if (match(proxy_mode, /tproxy/)) {
-        let tproxy_port = u.get(U_CONFIG, S_INFRA, 'tproxy_port') || '5332';
-        push(inbounds, { type: 'tproxy', tag: 'tproxy-in', listen: '::', listen_port: strToInt(tproxy_port), network: 'udp' });
-    }
     // 💡 备忘：TUN 组装管线已奉旨无限期终止，彻底绝后
 
     u.foreach(U_CONFIG, 'server', (cfg) => {
@@ -70,10 +96,66 @@ function build_inbounds(u) {
     return inbounds;
 }
 
-function generate_endpoint(node, self_mark) {
+function build_tproxy_inbounds(u) {
+    let inbounds = [];
+    let redirect_port = u.get(U_CONFIG, S_INFRA, 'redirect_port') || '5331';
+    let tproxy_port = u.get(U_CONFIG, S_INFRA, 'tproxy_port') || '5332';
+
+    push(inbounds, { type: 'redirect', tag: 'redirect-in', listen: '::', listen_port: strToInt(redirect_port) });
+    push(inbounds, { type: 'tproxy', tag: 'tproxy-in', listen: '::', listen_port: strToInt(tproxy_port), network: 'udp' });
+
+    return inbounds;
+}
+
+function build_tun_inbound(u) {
+    let addr4 = strOrDefault(u.get(U_CONFIG, S_INFRA, 'tun_addr4'), "172.19.0.1/30");
+    let addr6 = strOrDefault(u.get(U_CONFIG, S_INFRA, 'tun_addr6'), "fdfe:dcba:9876::1/126");
+    let stack = strOrDefault(
+        u.get(U_CONFIG, S_MAIN, 'tcpip_stack'),
+        strOrDefault(
+            u.get(U_CONFIG, S_ROUTING, 'tcpip_stack'),
+            strOrDefault(u.get(U_CONFIG, S_INFRA, 'tun_stack'), "system")
+        )
+    );
+
+    return {
+        type: 'tun',
+        tag: 'tun-in',
+        interface_name: strOrDefault(u.get(U_CONFIG, S_INFRA, 'tun_name'), "singtun0"),
+        address: [addr4, addr6],
+        mtu: strToIntDefault(u.get(U_CONFIG, S_INFRA, 'tun_mtu'), 9000),
+        auto_route: strToBoolDefault(u.get(U_CONFIG, S_INFRA, 'tun_auto_route'), true),
+        strict_route: strToBoolDefault(u.get(U_CONFIG, S_INFRA, 'tun_strict_route'), true),
+        auto_redirect: strToBoolDefault(u.get(U_CONFIG, S_INFRA, 'tun_auto_redirect'), true),
+        dns_mode: get_tun_dns_mode(u),
+        stack: stack
+    };
+}
+
+function build_inbounds(u, snap) {
+    let proxy_mode = get_proxy_mode(u);
+
+    if (proxy_mode !== "redirect_tproxy" && proxy_mode !== "tun") {
+        return Fail(ERR.E_CONFIG_FAULT, "Unsupported proxy mode: " + proxy_mode);
+    }
+
+    let inbounds = build_base_inbounds(u, snap, proxy_mode);
+
+    if (proxy_mode === "redirect_tproxy") {
+        let tproxy_inbounds = build_tproxy_inbounds(u);
+        for (let i = 0; i < length(tproxy_inbounds); i++) push(inbounds, tproxy_inbounds[i]);
+    } else if (proxy_mode === "tun") {
+        push(inbounds, build_tun_inbound(u));
+    }
+
+    return inbounds;
+}
+
+function generate_endpoint(node, self_mark, use_routing_mark) {
     if (type(node) !== 'object') return null;
 
-    let ep = { type: node.type, tag: sprintf("cfg-%s-out", node['.name']), server: node.address, server_port: strToInt(node.port), routing_mark: self_mark };
+    let ep = { type: node.type, tag: sprintf("cfg-%s-out", node['.name']), server: node.address, server_port: strToInt(node.port) };
+    if (use_routing_mark) ep.routing_mark = self_mark;
 
     switch (node.type) {
         case 'wireguard':
@@ -160,18 +242,22 @@ function generate_endpoint(node, self_mark) {
     return ep;
 }
 
-function build_outbounds(u) {
+function build_outbounds(u, proxy_mode) {
     let endpoints = [];
     let outbounds = [];
     let endpoint_dict = {};
     
     let self_mark = strToInt(u.get(U_CONFIG, S_INFRA, 'self_mark')) || 100;
+    let tun_auto_redirect = strToBoolDefault(u.get(U_CONFIG, S_INFRA, 'tun_auto_redirect'), true);
+    let use_routing_mark = !(proxy_mode === "tun" && tun_auto_redirect);
 
-    push(outbounds, { type: 'direct', tag: 'direct-out', routing_mark: self_mark });
+    let direct_out = { type: 'direct', tag: 'direct-out' };
+    if (use_routing_mark) direct_out.routing_mark = self_mark;
+    push(outbounds, direct_out);
     push(outbounds, { type: 'block', tag: 'block-out' });
 
     u.foreach(U_CONFIG, 'node', (cfg) => {
-        let ep = generate_endpoint(cfg, self_mark);
+        let ep = generate_endpoint(cfg, self_mark, use_routing_mark);
         if (ep) { push(endpoints, ep); endpoint_dict[ep.tag] = true; }
     });
 
@@ -205,6 +291,8 @@ function build_outbounds(u) {
 function build_policies(u, valid_outbounds) {
     let route = { rules: [], rule_set: [] };
     let dns = { servers: [], rules: [] };
+    let proxy_mode = get_proxy_mode(u);
+    let tun_auto_redirect = strToBoolDefault(u.get(U_CONFIG, S_INFRA, 'tun_auto_redirect'), true);
 
     let dns_strat = u.get(U_CONFIG, 'dns', 'dns_strategy');
     if (dns_strat) dns.strategy = dns_strat;
@@ -213,7 +301,11 @@ function build_policies(u, valid_outbounds) {
         if (cfg.enabled !== '1') return;
         let out_target = (cfg.outbound === 'direct-out' || cfg.outbound === 'block-out') ? cfg.outbound : sprintf("cfg-%s-out", cfg.outbound);
         if (out_target !== 'direct-out' && out_target !== 'block-out' && !valid_outbounds[out_target]) out_target = 'direct-out';
-        push(dns.servers, { tag: sprintf("cfg-%s-dns", cfg['.name']), type: cfg.type || 'udp', server: cfg.server, detour: out_target });
+        let server_obj = { tag: sprintf("cfg-%s-dns", cfg['.name']), type: cfg.type || 'udp', server: cfg.server };
+        if (!(proxy_mode === "tun" && tun_auto_redirect && out_target === 'direct-out')) {
+            server_obj.detour = out_target;
+        }
+        push(dns.servers, server_obj);
     });
 
     u.foreach(U_CONFIG, 'dns_rule', (cfg) => {
@@ -243,7 +335,7 @@ function build_policies(u, valid_outbounds) {
 
     // 🚨 1.14+ 核心捍卫：全局嗅探与官方标准原生 DNS 劫持机制
     push(route.rules, { action: "sniff" });
-    push(route.rules, { inbound: "dns-in", action: "hijack-dns" });
+    if (!is_tun_dns_hijack(u, proxy_mode)) push(route.rules, { inbound: "dns-in", action: "hijack-dns" });
     push(route.rules, { action: "resolve", strategy: u.get(U_CONFIG, 'routing', 'domain_strategy') || 'prefer_ipv4' });
 
     u.foreach(U_CONFIG, 'routing_rule', (cfg) => {
@@ -310,11 +402,17 @@ function build_experimental(u) {
  */
 function build_flow_model(trace_id) {
     try {
-        let u = cursor();
-        u.load(U_CONFIG); 
+        let ctx_res = load_uci_context(trace_id);
+        if (!ctx_res.ok) {
+            return Fail(ERR.E_CONFIG_FAULT, ctx_res.detail, trace_id);
+        }
+        let u = ctx_res.data.u;
+        let snap = ctx_res.data.snap;
 
-        let inbounds = build_inbounds(u);
-        let obs = build_outbounds(u);
+        let inbounds = build_inbounds(u, snap);
+        if (inbounds && inbounds.ok === false) return inbounds;
+        let proxy_mode = get_proxy_mode(u);
+        let obs = build_outbounds(u, proxy_mode);
         
         let valid_outbounds = {};
         for (let i = 0; i < length(obs.outbounds); i++) valid_outbounds[obs.outbounds[i].tag] = true;
@@ -325,7 +423,7 @@ function build_flow_model(trace_id) {
 
         let flow_model = {
             schema_version: "1.2",
-            enabled: (pd.default_out !== 'disabled' && pd.default_out !== null && pd.default_out !== ""),
+            enabled: snap.service_enabled,
             log: { level: u.get(U_CONFIG, S_MAIN, 'log_level') || 'warn', output_path: PATH.LOG_RUN },
             experimental: exp_model,
             inbounds: inbounds,
