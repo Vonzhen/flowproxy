@@ -49,7 +49,9 @@ return baseclass.extend({
                             clearInterval(poll_timer);
                             let err_reason = status.error || status.error_code || 'E_EXEC_FAIL';
                             this._finishModal(ui_elements, false, '任务异常终止 [Error: ' + err_reason + ']');
-                            reject(new Error(err_reason));
+                            let err = new Error(err_reason);
+                            err.status = status;
+                            reject(err);
                         } else if (status.state !== 'pending' && status.state !== 'unknown') {
                             // 动态更新运行态进度
                             ui_elements.status_txt.innerHTML = `正在执行引擎调度: [${status.state.toUpperCase()}] ... ${status.progress || 0}%`;
