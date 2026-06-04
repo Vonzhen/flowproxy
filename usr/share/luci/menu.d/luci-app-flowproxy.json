@@ -10,6 +10,14 @@
       "uci": { "flowproxy": true }
     }
   },
+  "admin/services/flowproxy/status": {
+    "title": "Service Status",
+    "order": 5,
+    "action": {
+      "type": "view",
+      "path": "flowproxy/status"
+    }
+  },
   "admin/services/flowproxy/client": {
     "title": "Client Settings",
     "order": 10,
@@ -26,20 +34,36 @@
       "path": "flowproxy/node"
     }
   },
+  "admin/services/flowproxy/resources": {
+    "title": "Resources Settings",
+    "order": 20,
+    "action": {
+      "type": "view",
+      "path": "flowproxy/resources"
+    }
+  },
+  "admin/services/flowproxy/system": {
+    "title": "System Settings",
+    "order": 25,
+    "action": {
+      "type": "view",
+      "path": "flowproxy/system"
+    }
+  },
   "admin/services/flowproxy/server": {
     "title": "Server Settings",
-    "order": 20,
+    "order": 30,
     "action": {
       "type": "view",
       "path": "flowproxy/server"
     }
   },
-  "admin/services/flowproxy/status": {
-    "title": "Service Status",
-    "order": 30,
+  "admin/services/flowproxy/diagnostics": {
+    "title": "Diagnostics Settings",
+    "order": 35,
     "action": {
       "type": "view",
-      "path": "flowproxy/status"
+      "path": "flowproxy/diagnostics"
     }
   }
 }
