@@ -18,6 +18,7 @@
 'require flowproxy as fp';
 'require tools.firewall as fwtool';
 'require tools.widgets as widgets';
+'require flowproxy.observer as observer';
 // View code uses the FlowProxy SDK instead of declaring RPC calls directly.
 // Keep backend access centralized in fp/observer helpers.
 
