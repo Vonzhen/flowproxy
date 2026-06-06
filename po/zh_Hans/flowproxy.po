@@ -2559,3 +2559,37 @@ msgstr "仅检查现有 run.json。不会生成配置、应用配置或重启服
 
 msgid "Run readonly check"
 msgstr "运行只读检查"
+
+# --- [ Client DNS evaluate 提示 ] ---
+
+msgid "Sing-box 1.14+ evaluate DNS rules"
+msgstr "Sing-box 1.14+ evaluate DNS 规则"
+
+msgid "The evaluate rule action is supported. Use the button below to generate a smart DNS base template, then add custom rules above it."
+msgstr "已支持 evaluate 规则动作。请使用下方按钮生成智能 DNS 基础模板，然后在其上方添加自定义规则。"
+
+# --- [ Resources 页面规则集资源 ] ---
+
+msgid "Download rule assets"
+msgstr "下载规则集资源"
+
+msgid "Enter one or more ruleset names, separated by comma or newline."
+msgstr "请输入一个或多个规则集名称，用逗号或换行分隔。"
+
+msgid "Please enter one or more ruleset names."
+msgstr "请输入一个或多个规则集名称。"
+
+msgid "Downloading rule assets"
+msgstr "正在下载规则集资源"
+
+msgid "Update used rule assets"
+msgstr "更新已使用的规则集资源"
+
+msgid "Manual resource updates do not apply configuration automatically."
+msgstr "手动更新资源不会自动应用配置。"
+
+msgid "Updating used rule assets"
+msgstr "正在更新已使用的规则集资源"
+
+msgid "Update rulesets currently referenced by FlowProxy. This does not apply configuration automatically."
+msgstr "更新 FlowProxy 当前引用的规则集。这不会自动应用配置。"
