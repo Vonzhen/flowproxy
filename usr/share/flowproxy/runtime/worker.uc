@@ -41,7 +41,7 @@ import {
 } from 'flowproxy.runtime.lifecycle';
 
 import { task_update_subscriptions } from 'flowproxy.modules.subscription';
-import { task_rebuild_groups } from 'flowproxy.modules.groups';
+import { _rebuild_groups_unlocked } from 'flowproxy.modules.groups';
 import { task_update_assets_summary, task_rollback_assets } from 'flowproxy.modules.assets';
 import { task_update_kernel } from 'flowproxy.modules.kernel';
 import { send_telegram_best_effort as notifier_send_telegram_best_effort, notification_summary } from 'flowproxy.modules.notifier';
@@ -421,7 +421,7 @@ function _handle_rebuild_groups(job_id, payload) {
     if (!lock_res.ok) return lock_res;
     let lock_handle = lock_res.data;
 
-    let res = task_rebuild_groups(job_id);
+    let res = _rebuild_groups_unlocked(job_id);
     lock_handle.release();
     if (!res.ok) return Fail(ERR.E_SYSTEM_BUSY, "重组节点组失败: " + res.detail, job_id);
     return res;
