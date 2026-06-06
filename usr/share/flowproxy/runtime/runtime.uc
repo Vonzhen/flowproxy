@@ -10,7 +10,7 @@
  * 0. Imports / Constants
  */
 
-import { writefile, unlink, access, readfile } from 'fs';
+import { writefile, unlink, access, readfile, stat } from 'fs';
 import { PATH, BIN } from 'flowproxy.core.constants';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
@@ -633,33 +633,77 @@ function apply_commit(trace_id, opts) {
 }
 
 /*
- * TODO(runtime-rollback):
- * Current rollback_commit has inconsistent historical semantics:
- * - Its name and nearby comments imply a transaction rollback.
- * - The implementation mainly performs execute_fallback + marker + restart request.
- * - It does not explicitly restore bak_path -> PATH.RUN_JSON.
- *
- * This pass only reorganizes runtime.uc internally and intentionally preserves
- * existing transaction behavior. A later change must decide either to fix
- * rollback_commit into a true transaction rollback or rename/re-document it
- * as a physical fallback request.
+ * rollback_commit restores the previous run.json before physical fallback and
+ * restart request. If the backup cannot be restored, it returns danger_state.
  */
 /**
  * 事务回滚：teardown + fallback + 恢复配置 + 重载请求（不触达 init.d/procd）
  */
 function rollback_commit(trace_id, bak_path, opts) {
     let reason = _reason(opts, "rollback");
+    let src = bak_path || PATH_PREV_CONFIG;
+    let src_stat = stat(src);
+
+    if (!src || !src_stat || !src_stat.size) {
+        let detail = "rollback previous run.json backup missing or empty: " + (src || "(none)");
+        log(trace_id, 'ERROR', 'RUNTIME', detail);
+        let fail_res = Fail(ERR.E_SYSTEM_BUSY, detail, trace_id);
+        fail_res.data = _normalize_failure_data(trace_id, detail, {
+            rollback_attempted: true,
+            rollback_success: false,
+            rollback_failed: true,
+            manual_intervention_required: true,
+            danger_state: true,
+            failed_stage: "restore_prev_run_json_failed",
+            restored_run_json: false
+        });
+        _log_rollback_observation(trace_id, "restore_old_run_json_result", fail_res.data);
+        return fail_res;
+    }
+
+    let restore_res = ExecSafe(BIN.CP, ["-f", src, PATH.RUN_JSON], null, trace_id);
+    let dst_stat = stat(PATH.RUN_JSON);
+    if (!restore_res.ok || !dst_stat || !dst_stat.size) {
+        let detail = "restore previous run.json failed: " + (restore_res.ok ? "restored file missing or empty" : restore_res.detail);
+        log(trace_id, 'ERROR', 'RUNTIME', detail);
+        let fail_res = Fail(ERR.E_SYSTEM_BUSY, detail, trace_id);
+        fail_res.data = _normalize_failure_data(trace_id, detail, {
+            rollback_attempted: true,
+            rollback_success: false,
+            rollback_failed: true,
+            manual_intervention_required: true,
+            danger_state: true,
+            failed_stage: "restore_prev_run_json_failed",
+            restored_run_json: false
+        });
+        _log_rollback_observation(trace_id, "restore_old_run_json_result", fail_res.data);
+        return fail_res;
+    }
+
+    _log_rollback_observation(trace_id, "restore_old_run_json_result", {
+        rollback_attempted: true,
+        rollback_success: true,
+        rollback_failed: false,
+        manual_intervention_required: false,
+        danger_state: false,
+        restored_run_json: true,
+        current_known_mode: _artifact_info(PATH.RUN_JSON).mode,
+        rollback_detail: "previous run.json restored"
+    });
+
     /* Physical cleanup is owned by execute_fallback; avoid double teardown/GC. */
     log(trace_id, 'WARN', 'RUNTIME', '[ROLLBACK] rollback_commit delegated cleanup to fallback reason=' + reason);
     safe_exec(trace_id, 'runtime', 'system.safety.fallback', () => execute_fallback(trace_id, { reason: "fallback" }));
 
-    let config_path = sprintf("%s/sing-box-run.json", PATH.RUNTIME);
-    if (bak_path) {
-        let failed_path = _quarantine_candidate(trace_id);
-    }
+    _quarantine_candidate(trace_id);
 
     mark_network_ready(trace_id);
-    return _emit_restart_request(trace_id, 'rollback_commit');
+    let restart_res = _emit_restart_request(trace_id, 'rollback_commit');
+    if (restart_res && restart_res.ok) {
+        restart_res.data = (type(restart_res.data) === 'object') ? restart_res.data : {};
+        restart_res.data.restored_run_json = true;
+    }
+    return restart_res;
 }
 
 /**

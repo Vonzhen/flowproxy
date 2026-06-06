@@ -14,7 +14,7 @@
 import { open as fs_open, stat } from 'fs';
 
 // 🚨 铁律 3: 绝对命名空间寻址
-import { PATH, BIN } from 'flowproxy.core.constants';
+import { PATH, BIN, LIMIT } from 'flowproxy.core.constants';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
 import { JOB_TYPES } from 'flowproxy.core.contract';
@@ -183,6 +183,54 @@ function _read_state(id) {
     }
 }
 
+function _read_state_for_status(id, trace_id) {
+    let path = _get_job_path(id);
+    if (!path) return Fail(ERR.E_SYSTEM_BUSY, "Job state not found for ID: " + id, trace_id);
+    let fd = fs_open(path, "r");
+    if (!fd) return Fail(ERR.E_SYSTEM_BUSY, "Job state not found for ID: " + id, trace_id);
+    let content = fd.read("all");
+    fd.close();
+    try {
+        let data = json(content);
+        if (!data || type(data) !== "object") {
+            return Fail(ERR.E_SYSTEM_BUSY, "Job state corrupted for ID: " + id, trace_id);
+        }
+        return Success(data, 200, trace_id);
+    } catch(e) {
+        return Fail(ERR.E_SYSTEM_BUSY, "Job state corrupted for ID: " + id, trace_id);
+    }
+}
+
+function _is_active_state(state) {
+    return (
+        state === STATE_ENUM.PENDING ||
+        state === STATE_ENUM.RUNNING ||
+        state === STATE_ENUM.VALIDATING ||
+        state === STATE_ENUM.COMMITTING ||
+        state === STATE_ENUM.ROLLBACK
+    );
+}
+
+function _mark_timeout_if_needed(job_id, state_obj, trace_id) {
+    if (!state_obj || !_is_active_state(state_obj.state)) return state_obj;
+
+    let timeout_sec = int(LIMIT.JOB_TIMEOUT || 0);
+    if (timeout_sec <= 0) return state_obj;
+
+    let updated_at = int(state_obj.update_time || state_obj.start_time || 0);
+    if (updated_at <= 0 || (time() - updated_at) <= timeout_sec) return state_obj;
+
+    state_obj.state = STATE_ENUM.FAIL;
+    state_obj.progress = state_obj.progress != null ? state_obj.progress : 100;
+    state_obj.update_time = time();
+    state_obj.error = "Job timeout: worker did not finish in time";
+
+    if (_write_state(job_id, state_obj)) {
+        log(trace_id || job_id, "WARN", "JOB", sprintf("Job timeout marked fail: %s", job_id));
+    }
+    return state_obj;
+}
+
 const JobManager = {
     dispatch: function(job_type, payload_obj, trace_id) {
         if (!JOB_TYPES[job_type]) {
@@ -234,10 +282,10 @@ const JobManager = {
         if (!norm.ok) return norm;
         job_id = norm.data.job_id;
 
-        let state_obj = _read_state(job_id);
-        if (!state_obj) {
-            return Fail(ERR.E_SYSTEM_BUSY, "Job state not found for ID: " + job_id, trace_id);
-        }
+        let read_res = _read_state_for_status(job_id, trace_id);
+        if (!read_res.ok) return read_res;
+        let state_obj = read_res.data;
+        state_obj = _mark_timeout_if_needed(job_id, state_obj, trace_id);
         return Success(state_obj, 200, trace_id);
     },
 

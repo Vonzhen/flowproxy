@@ -417,7 +417,12 @@ function _handle_apply_config(job_id, payload) {
 }
 
 function _handle_rebuild_groups(job_id, payload) {
+    let lock_res = acquire(job_id, "worker");
+    if (!lock_res.ok) return lock_res;
+    let lock_handle = lock_res.data;
+
     let res = task_rebuild_groups(job_id);
+    lock_handle.release();
     if (!res.ok) return Fail(ERR.E_SYSTEM_BUSY, "重组节点组失败: " + res.detail, job_id);
     return res;
 }
@@ -596,10 +601,11 @@ function _handle_watchdog_report(job_id, payload) {
     }, 200, job_id);
 }
 function _handle_maintenance_logrotate(job_id, payload) {
-    logrotate();
+    let cleanup = logrotate();
     Log('WORKER', 'INFO', 'Log archive maintenance completed.', job_id);
     return Success({
         maintenance_success: true,
+        cleanup: cleanup || {},
         msg: "日志归档完成"
     }, 200, job_id);
 }

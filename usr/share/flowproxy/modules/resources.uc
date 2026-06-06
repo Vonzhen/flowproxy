@@ -176,6 +176,98 @@ function restore_resources(trace_id, bak_path, log_module) {
     return Success(true, 200, trace_id);
 }
 
+function _deploy_stage_atomic(stage_file, final_file, list_type, trace_id) {
+    let bak_file = final_file + ".bak";
+    let stage_valid = _validate_file_body(stage_file);
+    if (!stage_valid.ok) {
+        ExecSafe(BIN.RM, ['-f', stage_file], null, trace_id);
+        let fail_res = Fail(ERR.E_SYSTEM_BUSY, sprintf(
+            "Staged output invalid for [%s]: %s (size=%d)",
+            list_type, stage_valid.error, stage_valid.file_size || 0
+        ), trace_id);
+        fail_res.data = {
+            stage_file: stage_file,
+            final_file: final_file,
+            bak_file: bak_file,
+            restore_attempted: false,
+            restore_success: false,
+            restore_failed: false,
+            danger_state: false
+        };
+        return fail_res;
+    }
+
+    if (stat(final_file)) {
+        let bak_res = ExecSafe(BIN.CP, ['-f', final_file, bak_file], null, trace_id);
+        if (!bak_res.ok) {
+            ExecSafe(BIN.RM, ['-f', stage_file], null, trace_id);
+            let fail_res = Fail(ERR.E_SYSTEM_BUSY, sprintf("Backup current resource failed for [%s]: %s", list_type, bak_res.detail), trace_id);
+            fail_res.data = {
+                stage_file: stage_file,
+                final_file: final_file,
+                bak_file: bak_file,
+                restore_attempted: false,
+                restore_success: false,
+                restore_failed: false,
+                danger_state: false
+            };
+            return fail_res;
+        }
+    }
+
+    let mv_res = ExecSafe(BIN.MV, ['-f', stage_file, final_file], null, trace_id);
+    if (!mv_res.ok) {
+        let restore_attempted = false;
+        let restore_success = false;
+        if (stat(bak_file)) {
+            restore_attempted = true;
+            let restore_res = ExecSafe(BIN.CP, ['-f', bak_file, final_file], null, trace_id);
+            restore_success = restore_res.ok && stat(final_file);
+        }
+        ExecSafe(BIN.RM, ['-f', stage_file], null, trace_id);
+        let fail_res = Fail(ERR.E_SYSTEM_BUSY, sprintf("Atomic resource deploy failed for [%s]: %s", list_type, mv_res.detail), trace_id);
+        fail_res.data = {
+            stage_file: stage_file,
+            final_file: final_file,
+            bak_file: bak_file,
+            restore_attempted: restore_attempted,
+            restore_success: restore_success,
+            restore_failed: restore_attempted && !restore_success,
+            danger_state: restore_attempted && !restore_success
+        };
+        return fail_res;
+    }
+
+    let final_valid = _validate_file_body(final_file);
+    if (!final_valid.ok) {
+        let restore_attempted = false;
+        let restore_success = false;
+        if (stat(bak_file)) {
+            restore_attempted = true;
+            let restore_res = ExecSafe(BIN.CP, ['-f', bak_file, final_file], null, trace_id);
+            restore_success = restore_res.ok && stat(final_file);
+        } else {
+            ExecSafe(BIN.RM, ['-f', final_file], null, trace_id);
+        }
+        let fail_res = Fail(ERR.E_SYSTEM_BUSY, sprintf(
+            "Deployed resource invalid for [%s]: %s (size=%d)",
+            list_type, final_valid.error, final_valid.file_size || 0
+        ), trace_id);
+        fail_res.data = {
+            stage_file: stage_file,
+            final_file: final_file,
+            bak_file: bak_file,
+            restore_attempted: restore_attempted,
+            restore_success: restore_success,
+            restore_failed: restore_attempted && !restore_success,
+            danger_state: restore_attempted && !restore_success
+        };
+        return fail_res;
+    }
+
+    return Success({ file_size: final_valid.file_size }, 200, trace_id);
+}
+
 /**
  * 核心业务：拉取并更新指定的物理规则资源
  * @param {string} trace_id - 贯穿始终的链路 ID
@@ -283,48 +375,36 @@ function task_update_resources(trace_id, list_type) {
         // 第四阶段：物理后处理 (Post-Processing) 与正式部署
         // ====================================================================
         let final_file = sprintf("%s/%s.txt", PATH.ASSETS, list_type);
+        let stage_file = final_file + ".stage";
+        ExecSafe(BIN.RM, ['-f', stage_file], null, trace_id);
 
         if (res_info.post_process) {
             log(trace_id, 'INFO', 'RESOURCES', sprintf("[%s] Engaging sed post-processing engine...", list_type));
 
-            ExecSafe(BIN.RM, ['-f', final_file], null, trace_id);
-
-            let sh_cmd = sprintf("sed -e 's/full://g' -e '/:/d' %s > %s", shell_escape(temp_file), shell_escape(final_file));
+            let sh_cmd = sprintf("sed -e 's/full://g' -e '/:/d' %s > %s", shell_escape(temp_file), shell_escape(stage_file));
             let proc_res = ExecSafe(BIN.SH, ['-c', sh_cmd], null, trace_id);
             ExecSafe(BIN.RM, ['-f', temp_file], null, trace_id);
 
             if (!proc_res.ok) {
-                ExecSafe(BIN.RM, ['-f', final_file], null, trace_id);
+                ExecSafe(BIN.RM, ['-f', stage_file], null, trace_id);
                 return Fail(ERR.E_SYSTEM_BUSY, sprintf(
                     "Post-processing failed for [%s] (sed exit, file not deployed)",
                     list_type
                 ), trace_id);
             }
 
-            let final_valid = _validate_file_body(final_file);
-            if (!final_valid.ok) {
-                ExecSafe(BIN.RM, ['-f', final_file], null, trace_id);
-                return Fail(ERR.E_SYSTEM_BUSY, sprintf(
-                    "Post-processed output invalid for [%s]: %s (size=%d)",
-                    list_type, final_valid.error, final_valid.file_size || 0
-                ), trace_id);
-            }
-            dl_meta.file_size = final_valid.file_size;
+            let deploy_res = _deploy_stage_atomic(stage_file, final_file, list_type, trace_id);
+            if (!deploy_res.ok) return deploy_res;
+            dl_meta.file_size = deploy_res.data.file_size;
         } else {
-            let mv_res = ExecSafe(BIN.MV, ['-f', temp_file, final_file], null, trace_id);
+            let mv_res = ExecSafe(BIN.MV, ['-f', temp_file, stage_file], null, trace_id);
             if (!mv_res.ok) {
                 ExecSafe(BIN.RM, ['-f', temp_file], null, trace_id);
                 return Fail(ERR.E_SYSTEM_BUSY, sprintf("Deployment move failed for [%s].", list_type), trace_id);
             }
-            let final_valid = _validate_file_body(final_file);
-            if (!final_valid.ok) {
-                ExecSafe(BIN.RM, ['-f', final_file], null, trace_id);
-                return Fail(ERR.E_SYSTEM_BUSY, sprintf(
-                    "Deployed file invalid for [%s]: %s (size=%d)",
-                    list_type, final_valid.error, final_valid.file_size || 0
-                ), trace_id);
-            }
-            dl_meta.file_size = final_valid.file_size;
+            let deploy_res = _deploy_stage_atomic(stage_file, final_file, list_type, trace_id);
+            if (!deploy_res.ok) return deploy_res;
+            dl_meta.file_size = deploy_res.data.file_size;
         }
 
         writefile(ver_path, list_ver + '\n');

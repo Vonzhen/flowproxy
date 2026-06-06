@@ -1,10 +1,6 @@
 /**
  * FlowProxy | modules/subscription.uc | v1.2 (Ultimate Syntax & Padding Safe Edition)
- * 职责：负责订阅节点拉取、协议深度解析并落地 UCI 格式。
- * 架构更新：
- * 1. 彻底清除正则字面量陷阱，保障 Ucode 编译期 100% 存活。
- * 2. 引入极限纯净 Base64 清洗器与智能 Padding 补全算法，免疫机场劣质数据。
- */
+ * 鑱岃矗锛氳礋璐ｈ闃呰妭鐐规媺鍙栥€佸崗璁繁搴﹁В鏋愬苟钀藉湴 UCI 鏍煎紡銆? * 鏋舵瀯鏇存柊锛? * 1. 褰诲簳娓呴櫎姝ｅ垯瀛楅潰閲忛櫡闃憋紝淇濋殰 Ucode 缂栬瘧鏈?100% 瀛樻椿銆? * 2. 寮曞叆鏋侀檺绾噣 Base64 娓呮礂鍣ㄤ笌鏅鸿兘 Padding 琛ュ叏绠楁硶锛屽厤鐤満鍦哄姡璐ㄦ暟鎹€? */
 
 'use strict';
 
@@ -17,11 +13,12 @@ import { ExecSafe, shell_escape } from 'flowproxy.core.utils';
 import { log } from 'flowproxy.core.logger';
 import { NetExec } from 'flowproxy.core.netexec';
 import { LIMIT } from 'flowproxy.core.constants';
+import { acquire } from 'flowproxy.core.lock';
 import {
     list_enabled_airports,
     build_subscription_opts
 } from 'flowproxy.core.config_helper';
-import { task_rebuild_groups } from 'flowproxy.modules.groups';
+import { _rebuild_groups_unlocked } from 'flowproxy.modules.groups';
 import { StateManager } from 'flowproxy.runtime.state';
 
 const MIN_PAYLOAD_BYTES = 16;
@@ -198,14 +195,12 @@ function _generate_stable_id(str) {
 function _decode_base64_str(str) {
     if (!str) return null;
     
-    // 1. 标准 URL-Safe 字符替换 (- -> +, _ -> /)
+    // 1. 鏍囧噯 URL-Safe 瀛楃鏇挎崲 (- -> +, _ -> /)
     let s = replace(replace(str, regexp('-', 'g'), '+'), regexp('_', 'g'), '/');
     
-    // 2. 🚨 极限清洗：使用白名单模式，物理抹杀所有不属于 Base64 的垃圾字符
-    s = replace(s, regexp('[^A-Za-z0-9+/=]', 'g'), ""); 
+    // 2. 馃毃 鏋侀檺娓呮礂锛氫娇鐢ㄧ櫧鍚嶅崟妯″紡锛岀墿鐞嗘姽鏉€鎵€鏈変笉灞炰簬 Base64 鐨勫瀮鍦惧瓧绗?    s = replace(s, regexp('[^A-Za-z0-9+/=]', 'g'), ""); 
     
-    // 3. 🚨 智能补齐：机场经常省略等号，导致 Ucode 引擎崩溃，我们手工帮它补齐
-    let mod = length(s) % 4;
+    // 3. 馃毃 鏅鸿兘琛ラ綈锛氭満鍦虹粡甯哥渷鐣ョ瓑鍙凤紝瀵艰嚧 Ucode 寮曟搸宕╂簝锛屾垜浠墜宸ュ府瀹冭ˉ榻?    let mod = length(s) % 4;
     if (mod === 2) {
         s += "==";
     } else if (mod === 3) {
@@ -230,7 +225,7 @@ function _urldecode(str) {
 }
 
 // ============================================================================
-// 🚀 重构版：完美复刻 HomeProxy 容错解析引擎 (无 Regex 崩溃风险)
+// 馃殌 閲嶆瀯鐗堬細瀹岀編澶嶅埢 HomeProxy 瀹归敊瑙ｆ瀽寮曟搸 (鏃?Regex 宕╂簝椋庨櫓)
 // ============================================================================
 function _parse_url(url_string) {
     let res = { protocol: "", username: "", password: "", hostname: "", port: "", searchParams: {}, hash: "" };
@@ -239,14 +234,14 @@ function _parse_url(url_string) {
     res.protocol = substr(url_string, 0, idx);
     let payload = substr(url_string, idx + 3);
     
-    // 1. 提取并解码 Hash (标签)
+    // 1. 鎻愬彇骞惰В鐮?Hash (鏍囩)
     let hash_idx = index(payload, "#");
     if (hash_idx >= 0) {
         res.hash = _urldecode(substr(payload, hash_idx + 1));
         payload = substr(payload, 0, hash_idx);
     }
     
-    // 2. 提取并解码 Query Params
+    // 2. 鎻愬彇骞惰В鐮?Query Params
     let qs_idx = index(payload, "?");
     if (qs_idx >= 0) {
         let qs = substr(payload, qs_idx + 1);
@@ -258,12 +253,12 @@ function _parse_url(url_string) {
         }
     }
     
-    // 3. 剥离尾部垃圾斜杠 (拯救 anytls)
+    // 3. 鍓ョ灏鹃儴鍨冨溇鏂滄潬 (鎷晳 anytls)
     if (substr(payload, length(payload) - 1, 1) === "/") {
         payload = substr(payload, 0, length(payload) - 1);
     }
     
-    // 4. 提取并解码 Auth (用户名/密码/UUID)
+    // 4. 鎻愬彇骞惰В鐮?Auth (鐢ㄦ埛鍚?瀵嗙爜/UUID)
     let auth_idx = index(payload, "@");
     let host_port = payload;
     if (auth_idx >= 0) {
@@ -278,7 +273,7 @@ function _parse_url(url_string) {
         }
     }
     
-    // 5. 纯字符串提取 Host 和 Port (彻底抛弃危险正则，完美兼容 IPv6)
+    // 5. 绾瓧绗︿覆鎻愬彇 Host 鍜?Port (褰诲簳鎶涘純鍗遍櫓姝ｅ垯锛屽畬缇庡吋瀹?IPv6)
     if (substr(host_port, 0, 1) === "[") {
         let close_idx = index(host_port, "]");
         if (close_idx > 0) {
@@ -297,7 +292,7 @@ function _parse_url(url_string) {
     }
     
     if (!res.port) res.port = "80"; 
-    // 清理端口中可能残留的垃圾字符
+    // 娓呯悊绔彛涓彲鑳芥畫鐣欑殑鍨冨溇瀛楃
     res.port = replace(res.port, regexp('[^0-9]', 'g'), '');
     return res;
 }
@@ -379,7 +374,59 @@ function _resolve_server_target(url, params, scheme, transport) {
     return hp;
 }
 
-function _parse_node_uri(uri, global_opts) {
+function _probe_match_value(v) {
+    v = trim(sprintf("%s", v || ""));
+    if (index(v, "26cnmdsb.266nets.com") >= 0) return true;
+    if (index(v, "24.d.d.d.d.266nets.com") >= 0) return true;
+    return false;
+}
+
+function _probe_should_log(raw_uri, url, params, target) {
+    if (_probe_match_value(raw_uri)) return true;
+    if (url && (_probe_match_value(url.hostname) || _probe_match_value(url.port))) return true;
+    params = params || {};
+    if (_probe_match_value(params.server)) return true;
+    if (_probe_match_value(params.address)) return true;
+    if (_probe_match_value(params.add)) return true;
+    if (_probe_match_value(params.remote)) return true;
+    if (_probe_match_value(params.endpoint)) return true;
+    if (_probe_match_value(params.host)) return true;
+    if (_probe_match_value(params.sni)) return true;
+    if (target && (_probe_match_value(target.host) || _probe_match_value(target.port) || _probe_match_value(target.source))) return true;
+    return false;
+}
+
+function _probe_log_server_target(trace_id, stage, raw_uri, scheme, url, params, target, config) {
+    try {
+        params = params || {};
+        if (!_probe_should_log(raw_uri, url, params, target)) return;
+
+        log(trace_id, 'WARN', 'SUBSCRIPTION', sprintf(
+            "[PARSE_PROBE:%s] scheme=%s authority_host=%s authority_port=%s q_server=%s q_address=%s q_add=%s q_remote=%s q_endpoint=%s q_host=%s q_sni=%s target_host=%s target_port=%s target_source=%s final_address=%s label=%s raw_uri=%s",
+            stage || "-",
+            scheme || "-",
+            url ? (url.hostname || "-") : "-",
+            url ? (url.port || "-") : "-",
+            params.server || "-",
+            params.address || "-",
+            params.add || "-",
+            params.remote || "-",
+            params.endpoint || "-",
+            params.host || "-",
+            params.sni || "-",
+            target ? (target.host || "-") : "-",
+            target ? (target.port || "-") : "-",
+            target ? (target.source || "-") : "-",
+            config ? (config.address || "-") : "-",
+            config ? (config.label || "-") : "-",
+            raw_uri || "-"
+        ));
+    } catch (e) {
+        log(trace_id, 'WARN', 'SUBSCRIPTION', '[PARSE_PROBE:skipped] ' + ("" + e));
+    }
+}
+
+function _parse_node_uri(uri, global_opts, trace_id) {
     let raw_uri = trim(uri);
     let parts = split(raw_uri, '://');
     if (length(parts) < 2) return null;
@@ -392,8 +439,7 @@ function _parse_node_uri(uri, global_opts) {
     let default_label = (url && url.hash) ? url.hash : "";
     let scheme_upper = uc(scheme); 
 
-    // 🚨 架构修复：同时兼容驼峰命名(allowInsecure)、简写(insecure) 和 下划线命名(allow_insecure)！
-    let p_insec = params.allowInsecure || params.insecure || params.allow_insecure || "";
+    // 馃毃 鏋舵瀯淇锛氬悓鏃跺吋瀹归┘宄板懡鍚?allowInsecure)銆佺畝鍐?insecure) 鍜?涓嬪垝绾垮懡鍚?allow_insecure)锛?    let p_insec = params.allowInsecure || params.insecure || params.allow_insecure || "";
     let is_insec = (p_insec === '1' || p_insec === 'true') ? '1' : '0';
 
     let v_json = null, ss_parts, full_dec, full_url, up, dec, hy2_pass, server_target, transport;
@@ -413,10 +459,11 @@ function _parse_node_uri(uri, global_opts) {
                 transport: transport, 
                 tls_alpn: params.alpn || "", tls_insecure: is_insec 
             };
+            _probe_log_server_target(trace_id, "vless-after-target", raw_uri, scheme, url, params, server_target, config);
             if (params.type === 'ws') { 
                 config.ws_host = params.host || ""; 
                 config.ws_path = params.path || ""; 
-                // 🌟 复刻 HomeProxy 的 Websocket Early Data (ed) 提取逻辑
+                // 馃専 澶嶅埢 HomeProxy 鐨?Websocket Early Data (ed) 鎻愬彇閫昏緫
                 let ed_idx = index(config.ws_path, "?ed=");
                 if (ed_idx >= 0) {
                     config.websocket_early_data_header = 'Sec-WebSocket-Protocol';
@@ -462,6 +509,7 @@ function _parse_node_uri(uri, global_opts) {
                 transport: transport, 
                 tls: '1', tls_sni: params.sni || "", tls_utls: params.fp || "", tls_insecure: is_insec 
             };
+            _probe_log_server_target(trace_id, "trojan-after-target", raw_uri, scheme, url, params, server_target, config);
             if (params.type === 'ws') { 
                 config.ws_host = params.host || ""; 
                 config.ws_path = params.path || ""; 
@@ -476,22 +524,25 @@ function _parse_node_uri(uri, global_opts) {
         case 'tuic':
             server_target = _resolve_server_target(url, params, scheme, "");
             config = { label: default_label, type: 'tuic', address: server_target.host, port: server_target.port, uuid: url.username, password: url.password || "", tls: '1', tls_sni: params.sni || "", tuic_congestion_control: params.congestion_control || "", tuic_udp_relay_mode: params.udp_relay_mode || "", tls_alpn: params.alpn || "", tls_insecure: is_insec };
+            _probe_log_server_target(trace_id, "tuic-after-target", raw_uri, scheme, url, params, server_target, config);
             break;
         case 'anytls':
             server_target = _resolve_server_target(url, params, scheme, "");
             config = { label: default_label, type: 'anytls', address: server_target.host, port: server_target.port, password: url.username, tls: '1', tls_sni: params.sni || "", tls_insecure: is_insec };
+            _probe_log_server_target(trace_id, "anytls-after-target", raw_uri, scheme, url, params, server_target, config);
             break;
         case 'hysteria2':
         case 'hy2':
             server_target = _resolve_server_target(url, params, scheme, "");
             hy2_pass = url.username || ""; if (url.password) hy2_pass += ":" + url.password;
             config = { label: default_label, type: 'hysteria2', address: server_target.host, port: server_target.port, password: hy2_pass, hysteria_obfs_type: params.obfs || "", hysteria_obfs_password: params['obfs-password'] || "", tls: '1', tls_insecure: is_insec, tls_sni: params.sni || "" };
+            _probe_log_server_target(trace_id, "hy2-after-target", raw_uri, scheme, url, params, server_target, config);
             break;
     }
 
     if (!config || !config.address || config.address === "") return null;
 
-    // 清理不可见控制字符 (遵循 1.0 铁律，不碰正则陷阱)
+    // 娓呯悊涓嶅彲瑙佹帶鍒跺瓧绗?(閬靛惊 1.0 閾佸緥锛屼笉纰版鍒欓櫡闃?
     config.label = replace(config.label || "", regexp("[\r\n\t]", 'g'), " ");
     config.label = trim(config.label);
     
@@ -550,7 +601,7 @@ function fetch_and_parse(airport_cfg, global_opts, trace_id) {
         let collision_idx = 0;
 
         for (let i = 0; i < length(lines); i++) {
-            let n = _parse_node_uri(lines[i], global_opts);
+            let n = _parse_node_uri(lines[i], global_opts, trace_id);
             if (n) {
                 n.airport_id = airport_cfg.id;
                 while (fp_cache[n.id]) { 
@@ -586,7 +637,7 @@ function task_update_subscriptions(trace_id, payload) {
 
     let target_airports = ap_res.data;
     if (length(target_airports) === 0) {
-        return Fail(ERR.E_SYSTEM_BUSY, "没有找到任何已启用的订阅节点", trace_id);
+        return Fail(ERR.E_SYSTEM_BUSY, "娌℃湁鎵惧埌浠讳綍宸插惎鐢ㄧ殑璁㈤槄鑺傜偣", trace_id);
     }
 
     let opts_res = build_subscription_opts(trace_id, payload);
@@ -597,7 +648,7 @@ function task_update_subscriptions(trace_id, payload) {
         (global_opts.update_via_proxy === '1' || global_opts.update_via_proxy === 1 || global_opts.update_via_proxy === true) ? "proxy" : "direct",
         global_opts.proxy_port || "(none)"));
 
-    let success_count = 0;
+    let pending_syncs = [];
     for (let i = 0; i < length(target_airports); i++) {
         let ap = target_airports[i];
         ap.id = ap.stable_airport_id || ap.name || ap['.name'];
@@ -610,44 +661,79 @@ function task_update_subscriptions(trace_id, payload) {
             log(trace_id, 'ERROR', 'SUBSCRIPTION', sprintf("Airport [%s] fetch failed: %s", ap_name, fail_reason));
             push(failed_airports, ap_name);
         } else {
-            let sync_res = StateManager.sync_uci_nodes(ap.id, valid_nodes, trace_id, [ap.legacy_airport_id]);
-            if (!sync_res.ok) {
-                log(trace_id, 'ERROR', 'SUBSCRIPTION', sprintf("Airport [%s] UCI write failed: %s", ap_name, sync_res.detail || "unknown"));
-                push(failed_airports, ap_name + " (uci_write_failed)");
-                continue;
-            }
-            log(trace_id, 'INFO', 'SUBSCRIPTION', sprintf("Airport [%s] subscription_success=true uci_write_success=true nodes=%d", ap_name, length(valid_nodes)));
-            success_count++;
-            total_nodes += length(valid_nodes);
-            push(airport_stats, {
-                name: ap_name,
-                nodes: length(valid_nodes)
+            push(pending_syncs, {
+                ap: ap,
+                ap_name: ap_name,
+                nodes: valid_nodes
             });
-            push(success_airports, sprintf("🔼 <b>%s:</b> %d 节点", ap_name, length(valid_nodes)));
         }
     }
 
-    if (success_count === 0) {
-        let fail_msg = "所有订阅均拉取失败";
+    if (length(pending_syncs) === 0) {
+        let fail_msg = "all subscription fetches failed";
         if (length(failed_airports) > 0) {
-            fail_msg += "。失败清单: " + join(", ", failed_airports);
+            fail_msg += ": " + join(", ", failed_airports);
         }
         return Fail(ERR.E_SYSTEM_BUSY, fail_msg, trace_id);
     }
 
-    let group_res = task_rebuild_groups(trace_id);
-    if (!group_res.ok) return Fail(ERR.E_SYSTEM_BUSY, "分组重建失败: " + group_res.detail, trace_id);
+    let success_count = 0;
+    let lock_res = acquire(trace_id, "worker");
+    if (!lock_res.ok) return lock_res;
+    let lock_handle = lock_res.data;
+
+    try {
+        for (let i = 0; i < length(pending_syncs); i++) {
+            let item = pending_syncs[i];
+            let sync_res = StateManager.sync_uci_nodes(item.ap.id, item.nodes, trace_id, [item.ap.legacy_airport_id]);
+            if (!sync_res.ok) {
+                log(trace_id, 'ERROR', 'SUBSCRIPTION', sprintf("Airport [%s] UCI write failed: %s", item.ap_name, sync_res.detail || "unknown"));
+                lock_handle.release();
+                return Fail(ERR.E_SYSTEM_BUSY, "subscription uci write failed: " + (sync_res.detail || "unknown"), trace_id);
+            }
+            log(trace_id, 'INFO', 'SUBSCRIPTION', sprintf("Airport [%s] subscription_success=true uci_write_success=true nodes=%d", item.ap_name, length(item.nodes)));
+            success_count++;
+            total_nodes += length(item.nodes);
+            push(airport_stats, {
+                name: item.ap_name,
+                nodes: length(item.nodes)
+            });
+            push(success_airports, sprintf("<b>%s:</b> %d nodes", item.ap_name, length(item.nodes)));
+        }
+
+        if (success_count > 0) {
+            let group_res = _rebuild_groups_unlocked(trace_id);
+            if (!group_res.ok) {
+                lock_handle.release();
+                return Fail(ERR.E_SYSTEM_BUSY, "subscription rebuild groups failed: " + group_res.detail, trace_id);
+            }
+        }
+
+        lock_handle.release();
+    } catch (e) {
+        lock_handle.release();
+        return Fail(ERR.E_SYSTEM_BUSY, "Subscription UCI write crashed: " + ("" + e), trace_id);
+    }
+
+    if (success_count === 0) {
+        let fail_msg = "鎵€鏈夎闃呭潎鎷夊彇澶辫触";
+        if (length(failed_airports) > 0) {
+            fail_msg += "銆傚け璐ユ竻鍗? " + join(", ", failed_airports);
+        }
+        return Fail(ERR.E_SYSTEM_BUSY, fail_msg, trace_id);
+    }
+
 
     log(trace_id, 'INFO', 'SUBSCRIPTION', 'Subscription business phase completed: subscription_success=true uci_write_success=true group_rebuild_success=true');
     let duration = time() - start_time;
     let summary_msg = (length(failed_airports) > 0)
-        ? "⚠️ <b>部分订阅更新失败</b>%0A"
-        : "✅ <b>订阅全局更新成功</b>%0A";
-    summary_msg += "━━━━━━━━━━━━━━━━━━%0A";
-    summary_msg += sprintf("⏱️ <b>总耗时:</b> %d 秒 | <b>总节点:</b> %d%0A%0A", duration, total_nodes);
-    summary_msg += "📑 <b>更新清单:</b>%0A" + join("%0A", success_airports) + "%0A";
+        ? "鈿狅笍 <b>閮ㄥ垎璁㈤槄鏇存柊澶辫触</b>%0A"
+        : "鉁?<b>璁㈤槄鍏ㄥ眬鏇存柊鎴愬姛</b>%0A";
+    summary_msg += "鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣鈹佲攣%0A";
+    summary_msg += sprintf("鈴憋笍 <b>鎬昏€楁椂:</b> %d 绉?| <b>鎬昏妭鐐?</b> %d%0A%0A", duration, total_nodes);
+    summary_msg += "馃搼 <b>鏇存柊娓呭崟:</b>%0A" + join("%0A", success_airports) + "%0A";
     if (length(failed_airports) > 0) {
-        summary_msg += "%0A❌ <b>失败断联:</b>%0A" + join(", ", failed_airports) + "%0A";
+        summary_msg += "%0A鉂?<b>澶辫触鏂仈:</b>%0A" + join(", ", failed_airports) + "%0A";
     }
     summary_msg += "%0A[RESTART_PENDING]";
 
