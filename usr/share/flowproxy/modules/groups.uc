@@ -14,6 +14,7 @@ import { Success, Fail } from 'flowproxy.core.result';
 import { with_changed } from 'flowproxy.core.module_result';
 import { log } from 'flowproxy.core.logger';
 import { stable_airport_id } from 'flowproxy.core.config_helper';
+import { acquire } from 'flowproxy.core.lock';
 
 const UCICONFIG = 'flowproxy';
 
@@ -21,7 +22,7 @@ const UCICONFIG = 'flowproxy';
  * 模块对外导出的主接口
  * @param {string} trace_id - 贯穿始终的链路 ID
  */
-function task_rebuild_groups(trace_id) {
+function _rebuild_groups_unlocked(trace_id) {
     log(trace_id, 'INFO', 'GROUPS', 'Starting Dynamic Node Groups Generation...');
     
     try {
@@ -150,7 +151,10 @@ function task_rebuild_groups(trace_id) {
             uci.set(UCICONFIG, m_id, 'auto_generated', '1');
         }
 
-        uci.commit(UCICONFIG);
+        let commit_ok = uci.commit(UCICONFIG);
+        if (!commit_ok) {
+            return Fail(ERR.E_SYSTEM_BUSY, "uci commit failed while rebuilding groups", trace_id);
+        }
         log(trace_id, 'INFO', 'GROUPS', 'Dynamic Node Groups Generation completed successfully.');
         
         return Success(with_changed(true, {}), 200, trace_id);
@@ -163,5 +167,24 @@ function task_rebuild_groups(trace_id) {
     }
 }
 
+function task_rebuild_groups(trace_id) {
+    let lock_res = acquire(trace_id, "worker");
+    if (!lock_res.ok) return lock_res;
+    let lock_handle = lock_res.data;
+
+    let res = null;
+    try {
+        res = _rebuild_groups_unlocked(trace_id);
+    } catch(e) {
+        lock_handle.release();
+        let err_msg = "" + e;
+        log(trace_id, 'CRIT', 'GROUPS', 'Fatal Crash: ' + err_msg);
+        return Fail(ERR.E_SYSTEM_BUSY, err_msg, trace_id);
+    }
+
+    lock_handle.release();
+    return res;
+}
+
 // 🚨 遵守铁律 1: 绝对集中在文件末尾导出
-export { task_rebuild_groups };
+export { task_rebuild_groups, _rebuild_groups_unlocked };

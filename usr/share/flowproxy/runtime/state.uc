@@ -210,7 +210,10 @@ const StateManager = {
             u.delete("flowproxy", to_delete[j]);
         }
 
-        u.commit("flowproxy");
+        let commit_ok = u.commit("flowproxy");
+        if (!commit_ok) {
+            return Fail(ERR.E_SYSTEM_BUSY, sprintf("uci commit failed while syncing airport [%s]", airport_id), trace_id);
+        }
         log(trace_id, "INFO", "STATE", sprintf("Airport [%s] synced explicitly: %d nodes written.", airport_id, length(new_nodes)));
         
         return Success(length(new_nodes), 200, trace_id);
@@ -265,7 +268,17 @@ const StateManager = {
             snap.diagnostic = {};
             if (stat(PATH_RUNTIME_STATE)) {
                 let st_content = readfile(PATH_RUNTIME_STATE);
-                if (st_content) snap.diagnostic = json(st_content) || {};
+                if (st_content) {
+                    try {
+                        snap.diagnostic = json(st_content) || {};
+                    } catch (state_err) {
+                        snap.diagnostic = {
+                            state_corrupted: true,
+                            state_corrupted_detail: "" + state_err
+                        };
+                        log(trace_id, 'WARN', 'STATE', 'runtime.state corrupted during snapshot: ' + ("" + state_err));
+                    }
+                }
             }
             snap.diagnostic.current_health_mode = health_mode;
             snap.diagnostic.current_health_mode_source = health_mode_source;

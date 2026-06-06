@@ -21,6 +21,7 @@ import { with_changed } from 'flowproxy.core.module_result';
 import { ExecSafe, shell_escape } from 'flowproxy.core.utils';
 import { log } from 'flowproxy.core.logger';
 import { fetch_with_policy } from 'flowproxy.core.resource_fetch';
+import { acquire } from 'flowproxy.core.lock';
 
 const UCICONFIG = 'flowproxy';
 const RULE_DIR = PATH.RULESET;
@@ -75,16 +76,83 @@ function _atomic_swap_with_bak(tmp_path, final_path, trace_id) {
     let stage_path = final_path + ".stage";
     let bak_path = final_path + ".bak";
 
-    if (stat(final_path)) {
-        ExecSafe(BIN.MV, ["-f", final_path, bak_path], null, trace_id);
-    }
-
     let cp_res = ExecSafe(BIN.CP, ["-f", tmp_path, stage_path], null, trace_id);
     unlink(tmp_path);
-    if (!cp_res.ok) return false;
+    if (!cp_res.ok) {
+        let fail_res = Fail(ERR.E_SYSTEM_BUSY, "ruleset stage copy failed: " + cp_res.detail, trace_id);
+        fail_res.data = {
+            stage_file: stage_path,
+            final_file: final_path,
+            bak_file: bak_path,
+            restore_attempted: false,
+            restore_success: false,
+            danger_state: false
+        };
+        return fail_res;
+    }
+
+    let stage_stat = stat(stage_path);
+    if (!stage_stat || !stage_stat.size) {
+        unlink(stage_path);
+        let fail_res = Fail(ERR.E_SYSTEM_BUSY, "ruleset stage invalid or empty", trace_id);
+        fail_res.data = {
+            stage_file: stage_path,
+            final_file: final_path,
+            bak_file: bak_path,
+            restore_attempted: false,
+            restore_success: false,
+            danger_state: false
+        };
+        return fail_res;
+    }
+
+    let live_moved = false;
+    if (stat(final_path)) {
+        let bak_res = ExecSafe(BIN.MV, ["-f", final_path, bak_path], null, trace_id);
+        if (!bak_res.ok) {
+            unlink(stage_path);
+            let fail_res = Fail(ERR.E_SYSTEM_BUSY, "ruleset backup failed: " + bak_res.detail, trace_id);
+            fail_res.data = {
+                stage_file: stage_path,
+                final_file: final_path,
+                bak_file: bak_path,
+                restore_attempted: false,
+                restore_success: false,
+                danger_state: false
+            };
+            return fail_res;
+        }
+        live_moved = true;
+    }
     
     let mv_res = ExecSafe(BIN.MV, ["-f", stage_path, final_path], null, trace_id);
-    return mv_res.ok;
+    if (mv_res.ok) {
+        return Success({
+            stage_file: stage_path,
+            final_file: final_path,
+            bak_file: bak_path,
+            restore_attempted: false,
+            restore_success: false,
+            danger_state: false
+        }, 200, trace_id);
+    }
+
+    let restore_success = false;
+    if (live_moved && stat(bak_path)) {
+        let restore_res = ExecSafe(BIN.MV, ["-f", bak_path, final_path], null, trace_id);
+        restore_success = restore_res.ok && stat(final_path);
+    }
+    unlink(stage_path);
+    let fail_res = Fail(ERR.E_SYSTEM_BUSY, "ruleset atomic swap failed: " + mv_res.detail, trace_id);
+    fail_res.data = {
+        stage_file: stage_path,
+        final_file: final_path,
+        bak_file: bak_path,
+        restore_attempted: live_moved,
+        restore_success: restore_success,
+        danger_state: live_moved && !restore_success
+    };
+    return fail_res;
 }
 
 /**
@@ -119,7 +187,7 @@ function _restore_assets_backup(trace_id) {
 /**
  * 🌟 核心引擎 1：动态 UCI 注册挂载点
  */
-function _auto_inject_uci(name, file_path, trace_id) {
+function _auto_inject_uci_unlocked(name, file_path, trace_id) {
     let uctx = cursor();
     uctx.load(UCICONFIG);
     
@@ -130,7 +198,7 @@ function _auto_inject_uci(name, file_path, trace_id) {
 
     if (exists) {
         log(trace_id, 'INFO', 'ASSETS', sprintf("规则集 [%s] 已在 UCI 中，跳过注册。", name));
-        return;
+        return Success(with_changed(false, { ruleset: name, path: file_path }), 200, trace_id);
     }
 
     log(trace_id, 'INFO', 'ASSETS', sprintf("正在为 [%s] 动态注册 UCI 节点...", name));
@@ -147,15 +215,39 @@ function _auto_inject_uci(name, file_path, trace_id) {
     uctx.set(UCICONFIG, sec_id, "path", file_path);
     
     // 🚨 修复 3：补全 UCI 保存铁律，生成暂存快照，确保落盘不丢失！
-    uctx.save(UCICONFIG);
-    uctx.commit(UCICONFIG);
+    let save_ok = uctx.save(UCICONFIG);
+    if (!save_ok) {
+        return Fail(ERR.E_SYSTEM_BUSY, "uci save failed while registering ruleset: " + name, trace_id);
+    }
+    let commit_ok = uctx.commit(UCICONFIG);
+    if (!commit_ok) {
+        return Fail(ERR.E_SYSTEM_BUSY, "uci commit failed while registering ruleset: " + name, trace_id);
+    }
     
     log(trace_id, 'INFO', 'ASSETS', sprintf("成功注册节点: %s", sec_id));
+    return Success(with_changed(true, { ruleset: name, path: file_path }), 200, trace_id);
 }
 
 /**
  * URL 生成器：对齐原生 Shell 算法
  */
+function _auto_inject_uci(name, file_path, trace_id) {
+    let lock_res = acquire(trace_id, "worker");
+    if (!lock_res.ok) return lock_res;
+    let lock_handle = lock_res.data;
+
+    let res = null;
+    try {
+        res = _auto_inject_uci_unlocked(name, file_path, trace_id);
+    } catch(e) {
+        lock_handle.release();
+        return Fail(ERR.E_SYSTEM_BUSY, "ruleset uci inject crashed: " + ("" + e), trace_id);
+    }
+
+    lock_handle.release();
+    return res;
+}
+
 function _generate_urls(name, base_url, private_repo) {
     let urls = [];
     if (private_repo) {
@@ -205,9 +297,19 @@ function _download_manual(target_str, trace_id) {
         }
         
         if (dl_ok) {
-            ExecSafe(BIN.MV, ["-f", tmp_path, final_path], null, trace_id);
+            let swap_res = _atomic_swap_with_bak(tmp_path, final_path, trace_id);
+            if (!swap_res.ok) {
+                log(trace_id, 'ERROR', 'ASSETS', 'Atomic ruleset deploy failed: ' + swap_res.detail);
+                push(fail_items, name + " (atomic_swap_failed)");
+                continue;
+            }
             log(trace_id, 'INFO', 'ASSETS', '✅ 入库成功: ' + name);
-            _auto_inject_uci(name, final_path, trace_id);
+            let inject_res = _auto_inject_uci(name, final_path, trace_id);
+            if (inject_res && !inject_res.ok) {
+                log(trace_id, 'ERROR', 'ASSETS', 'UCI registration failed: ' + inject_res.detail);
+                push(fail_items, name + " (uci_commit_failed)");
+                continue;
+            }
             push(updated_items, name);
         } else {
             log(trace_id, 'ERROR', 'ASSETS', '❌ 下载失败: ' + name);
@@ -286,9 +388,11 @@ function _update_all_rulesets(trace_id) {
             push(unchanged_items, name);
             unlink(tmp_file);
         } else {
-            if (_atomic_swap_with_bak(tmp_file, live_path, trace_id)) {
+            let swap_res = _atomic_swap_with_bak(tmp_file, live_path, trace_id);
+            if (swap_res.ok) {
                 push(updated_items, name);
             } else {
+                log(trace_id, 'ERROR', 'ASSETS', 'Atomic ruleset deploy failed: ' + swap_res.detail);
                 push(fail_items, name);
             }
         }
