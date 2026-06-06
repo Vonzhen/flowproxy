@@ -256,6 +256,28 @@ const JobManager = {
         return Success(active, 200, trace_id);
     },
 
+    set_result_summary: function(job_id, summary_obj, trace_id) {
+        let t_id = trace_id || job_id;
+        let state_obj = _read_state(job_id);
+        if (!state_obj) {
+            return Fail(ERR.E_SYSTEM_BUSY, "Job state not found for result summary", t_id);
+        }
+
+        if (type(summary_obj) !== "object") {
+            return Fail(ERR.E_SYSTEM_BUSY, "Invalid result summary schema", t_id);
+        }
+
+        state_obj.result_summary = summary_obj;
+        state_obj.update_time = time();
+
+        if (!_write_state(job_id, state_obj)) {
+            return Fail(ERR.E_SYSTEM_BUSY, "Failed to persist result summary", t_id);
+        }
+
+        log(t_id, "INFO", "JOB", "Result summary persisted");
+        return Success(true, 200, t_id);
+    },
+
     transition: function(job_id, new_state, progress_int, error_message, trace_id) {
         let t_id = trace_id || job_id;
         let state_obj = _read_state(job_id);
@@ -291,12 +313,14 @@ function dispatch(type, payload, tid) { return JobManager.dispatch(type, payload
 function get_status(id, tid) { return JobManager.status(id, tid); }
 function get(id, tid) { return JobManager.status(id, tid); }
 function transition(id, ns, p, err, tid) { return JobManager.transition(id, ns, p, err, tid); }
+function set_result_summary(id, summary, tid) { return JobManager.set_result_summary(id, summary, tid); }
 
 export {
     dispatch,
     get_status,
     get,
     transition,
+    set_result_summary,
     JobManager,
     STATE_ENUM,
     parse_job_start_envelope,

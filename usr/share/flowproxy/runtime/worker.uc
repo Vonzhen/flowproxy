@@ -13,7 +13,7 @@ import { Success, Fail } from 'flowproxy.core.result';
 import { with_changed } from 'flowproxy.core.module_result';
 import { log as sys_log } from 'flowproxy.core.logger';
 
-import { get_status, transition, STATE_ENUM } from 'flowproxy.core.job';
+import { get_status, transition, set_result_summary, STATE_ENUM } from 'flowproxy.core.job';
 import { acquire } from 'flowproxy.core.lock';
 import { run_all_checks } from 'flowproxy.core.selfcheck';
 import { StateManager } from 'flowproxy.runtime.state';
@@ -142,6 +142,128 @@ function _fill_cron_observation_fields(data, payload, failed, stage) {
 
 function _send_telegram_best_effort(task_type, status, msg, job_id) {
     return notifier_send_telegram_best_effort(task_type, status, msg, job_id, 'WORKER');
+}
+
+const RESULT_SUMMARY_LIST_LIMIT = 20;
+
+function _as_array(v) {
+    return (type(v) === 'array') ? v : [];
+}
+
+function _copy_summary_flag(summary, data, key) {
+    if (type(data) === 'object' && data[key] != null) {
+        summary[key] = data[key];
+    }
+}
+
+function _limit_string_list(items) {
+    items = _as_array(items);
+    let out = [];
+    for (let i = 0; i < length(items) && i < RESULT_SUMMARY_LIST_LIMIT; i++) {
+        push(out, sprintf("%s", items[i]));
+    }
+    return out;
+}
+
+function _limit_airport_stats(items) {
+    items = _as_array(items);
+    let out = [];
+    for (let i = 0; i < length(items) && i < RESULT_SUMMARY_LIST_LIMIT; i++) {
+        let item = items[i] || {};
+        push(out, {
+            name: sprintf("%s", item.name || "unknown"),
+            nodes: int(item.nodes || 0)
+        });
+    }
+    return out;
+}
+
+function _array_len(items) {
+    return length(_as_array(items));
+}
+
+function _build_result_summary(job_type, state, data, detail) {
+    data = (type(data) === 'object') ? data : {};
+    let summary = {
+        kind: job_type || "unknown",
+        message: "",
+        counts: {},
+        items: {}
+    };
+
+    _copy_summary_flag(summary, data, "manual_apply_required");
+    _copy_summary_flag(summary, data, "runtime_applied");
+    _copy_summary_flag(summary, data, "dataplane_success");
+    _copy_summary_flag(summary, data, "next_action");
+    _copy_summary_flag(summary, data, "error_stage");
+    _copy_summary_flag(summary, data, "failed_stage");
+    _copy_summary_flag(summary, data, "config_committed");
+    _copy_summary_flag(summary, data, "rollback_success");
+    _copy_summary_flag(summary, data, "old_mode");
+    _copy_summary_flag(summary, data, "new_mode");
+
+    if (detail) summary.error_message = detail;
+    else if (data.detail) summary.error_message = data.detail;
+
+    if (job_type === "update_subscriptions") {
+        let failed_airports = _as_array(data.failed_airports);
+        let failed_count = data.failed_count != null ? int(data.failed_count) : length(failed_airports);
+        summary.message = (state === "fail")
+            ? "订阅更新失败"
+            : (failed_count > 0 ? "订阅部分更新成功" : "订阅全局更新成功");
+        summary.duration_sec = int(data.duration_sec || data.duration || 0);
+        summary.counts.success = int(data.success_count || 0);
+        summary.counts.failed = failed_count;
+        summary.counts.total_nodes = int(data.total_nodes || 0);
+        summary.counts.total = summary.counts.success + summary.counts.failed;
+        summary.items.airport_stats = _limit_airport_stats(data.airport_stats);
+        summary.items.failed = _limit_string_list(failed_airports);
+        return summary;
+    }
+
+    if (job_type === "rebuild_groups") {
+        summary.message = (state === "fail") ? "节点组重建失败" : "节点组重建完成";
+        if (data.changed != null) summary.changed = !!data.changed;
+        return summary;
+    }
+
+    if (job_type === "update_assets" || job_type === "update_resources") {
+        let updated = _as_array(data.updated);
+        let unchanged = _as_array(data.unchanged);
+        let failed = _as_array(data.failed);
+        let failed_count = length(failed);
+        let label = job_type === "update_assets" ? "规则集" : "资源";
+        summary.message = (state === "fail")
+            ? label + "更新失败"
+            : (failed_count > 0 ? label + "部分更新成功" : label + "更新完成");
+        summary.counts.updated = length(updated);
+        summary.counts.unchanged = length(unchanged);
+        summary.counts.failed = failed_count;
+        summary.counts.total = length(updated) + length(unchanged) + failed_count;
+        summary.items.updated = _limit_string_list(updated);
+        summary.items.unchanged = _limit_string_list(unchanged);
+        summary.items.failed = _limit_string_list(failed);
+        if (data.version) summary.version = data.version;
+        if (data.changed != null) summary.changed = !!data.changed;
+        return summary;
+    }
+
+    if (job_type === "apply_config" || job_type === "mode_switch_apply") {
+        summary.message = (state === "fail") ? "配置应用失败" : "配置已应用";
+        return summary;
+    }
+
+    summary.message = (state === "fail") ? "任务失败" : "任务完成";
+    return summary;
+}
+
+function _persist_result_summary(job_id, job_type, state, data, detail) {
+    let summary = _build_result_summary(job_type, state, data, detail);
+    let res = set_result_summary(job_id, summary, job_id);
+    if (!res || !res.ok) {
+        Log('WORKER', 'WARN', 'result_summary persist failed: ' + ((res && res.detail) ? res.detail : "unknown"), job_id);
+    }
+    return res;
 }
 
 function _needs_reload(job_type, result, payload) {
@@ -502,6 +624,7 @@ function main(job_id) {
 
     let check_res = run_all_checks(job_id);
     if (!check_res.ok) {
+        _persist_result_summary(job_id, "unknown", "fail", { detail: "SYSTEM NOT HEALTHY: " + check_res.detail }, "SYSTEM NOT HEALTHY: " + check_res.detail);
         transition(job_id, STATE_ENUM.FAIL, 0, "SYSTEM NOT HEALTHY: " + check_res.detail, job_id);
         exit(1);
     }
@@ -520,12 +643,14 @@ function main(job_id) {
         if (!JOB_TYPES[safe_type]) {
             let err_msg = "E_CONTRACT_VIOLATION: Job not in contract -> " + safe_type;
             Log('WORKER', 'ERROR', err_msg, job_id);
+            _persist_result_summary(job_id, safe_type, "fail", { detail: err_msg }, err_msg);
             transition(job_id, STATE_ENUM.FAIL, current_job.progress, err_msg, job_id);
             exit(1);
         }
         if (!HANDLERS[safe_type]) {
             let err_msg = "E_CONTRACT_VIOLATION: Handler missing for contract job -> " + safe_type;
             Log('WORKER', 'ERROR', err_msg, job_id);
+            _persist_result_summary(job_id, safe_type, "fail", { detail: err_msg }, err_msg);
             transition(job_id, STATE_ENUM.FAIL, current_job.progress, err_msg, job_id);
             _send_telegram_best_effort(safe_type, "fail", notification_summary(safe_type, "fail", { detail: err_msg }, err_msg), job_id);
             exit(1);
@@ -570,13 +695,15 @@ function main(job_id) {
                     result.data.error_stage = "runtime_reload";
                     result.data.detail = reload_detail;
                     Log('WORKER', 'WARN', "Subscription business succeeded but dataplane reload failed: subscription_success=true dataplane_success=false detail=" + reload_detail, job_id);
+                    _persist_result_summary(job_id, safe_type, "success", result.data, reload_detail);
                     transition(job_id, STATE_ENUM.SUCCESS, 100, null, job_id);
                     _send_telegram_best_effort(safe_type, "success", notification_summary(safe_type, "success", result.data, result.data.msg), job_id);
                     exit(0);
                 }
-                transition(job_id, STATE_ENUM.FAIL, 95, reload_detail, job_id);
                 let reload_fail_data = (type(reload_res.data) === 'object') ? reload_res.data : {};
                 reload_fail_data.detail = reload_detail;
+                _persist_result_summary(job_id, safe_type, "fail", reload_fail_data, reload_detail);
+                transition(job_id, STATE_ENUM.FAIL, 95, reload_detail, job_id);
                 _send_telegram_best_effort(safe_type, "fail", notification_summary(safe_type, "fail", reload_fail_data, reload_detail), job_id);
                 exit(1);
             }
@@ -607,6 +734,7 @@ function main(job_id) {
                 _log_cron_apply_result(job_id, safe_type, result.data);
             }
 
+            _persist_result_summary(job_id, safe_type, "success", result.data, null);
             transition(job_id, STATE_ENUM.SUCCESS, 100, null, job_id);
             let dynamic_msg = (type(result.data) === 'object' && result.data.msg) ? result.data.msg : "Task completed";
             let notify_status = "success";
@@ -630,13 +758,15 @@ function main(job_id) {
             }
             _send_telegram_best_effort(safe_type, notify_status, dynamic_msg, job_id);
         } else {
-            transition(job_id, STATE_ENUM.FAIL, current_job.progress, result.detail, job_id);
             let fail_data = (type(result.data) === 'object') ? result.data : {};
             fail_data.detail = result.detail || "unknown";
+            _persist_result_summary(job_id, safe_type, "fail", fail_data, result.detail);
+            transition(job_id, STATE_ENUM.FAIL, current_job.progress, result.detail, job_id);
             _send_telegram_best_effort(safe_type, "fail", notification_summary(safe_type, "fail", fail_data, result.detail), job_id);
         }
     } catch (e) {
         let err_msg = "" + e;
+        _persist_result_summary(job_id, current_job.type, "fail", { detail: "Worker crashed: " + err_msg }, "Worker crashed: " + err_msg);
         transition(job_id, STATE_ENUM.FAIL, current_job.progress, "Worker crashed: " + err_msg, job_id);
         _send_telegram_best_effort(current_job.type, "fail", notification_summary(current_job.type, "fail", { detail: "Worker crashed: " + err_msg }, "Worker crashed: " + err_msg), job_id);
     }

@@ -302,6 +302,83 @@ function _parse_url(url_string) {
     return res;
 }
 
+function _first_param(params, keys) {
+    params = params || {};
+    for (let i = 0; i < length(keys); i++) {
+        let v = params[keys[i]];
+        if (v != null && length(trim(sprintf("%s", v))) > 0) return trim(sprintf("%s", v));
+    }
+    return "";
+}
+
+function _split_host_port(raw_host, fallback_port) {
+    let out = {
+        host: trim(sprintf("%s", raw_host || "")),
+        port: fallback_port || ""
+    };
+
+    if (length(out.host) === 0) return out;
+
+    if (substr(out.host, 0, 1) === "[") {
+        let close_idx = index(out.host, "]");
+        if (close_idx > 0) {
+            let inner_host = substr(out.host, 1, close_idx - 1);
+            let remainder = substr(out.host, close_idx + 1);
+            if (substr(remainder, 0, 1) === ":") {
+                let p = replace(substr(remainder, 1), regexp('[^0-9]', 'g'), '');
+                if (length(p) > 0) out.port = p;
+            }
+            out.host = inner_host;
+        }
+        return out;
+    }
+
+    let colon_idx = index(out.host, ":");
+    if (colon_idx >= 0 && index(substr(out.host, colon_idx + 1), ":") < 0) {
+        let tail = substr(out.host, colon_idx + 1);
+        let p = replace(tail, regexp('[^0-9]', 'g'), '');
+        if (length(p) > 0 && length(p) === length(tail)) {
+            out.host = substr(out.host, 0, colon_idx);
+            out.port = p;
+        }
+    }
+
+    return out;
+}
+
+function _resolve_server_target(url, params, scheme, transport) {
+    let raw = _first_param(params, [ "server", "address", "add", "remote", "endpoint" ]);
+    let source = "explicit";
+
+    /*
+     * Some converters put the real dial target in host for URI-style AnyTLS or
+     * plain TCP links. Do not use host for WS/HTTP transports by default,
+     * because there it normally means the HTTP Host header.
+     */
+    if (!raw) {
+        let allow_host = (scheme === "anytls" || scheme === "tuic" || scheme === "hysteria2" || scheme === "hy2");
+        if ((scheme === "trojan" || scheme === "vless") && (!transport || transport === "tcp")) {
+            allow_host = true;
+        }
+        if (allow_host) {
+            raw = _first_param(params, [ "host" ]);
+            source = "host";
+        }
+    }
+
+    if (!raw) {
+        return {
+            host: url ? (url.hostname || "") : "",
+            port: url ? (url.port || "") : "",
+            source: "authority"
+        };
+    }
+
+    let hp = _split_host_port(raw, url ? (url.port || "") : "");
+    hp.source = source;
+    return hp;
+}
+
 function _parse_node_uri(uri, global_opts) {
     let raw_uri = trim(uri);
     let parts = split(raw_uri, '://');
@@ -319,19 +396,21 @@ function _parse_node_uri(uri, global_opts) {
     let p_insec = params.allowInsecure || params.insecure || params.allow_insecure || "";
     let is_insec = (p_insec === '1' || p_insec === 'true') ? '1' : '0';
 
-    let v_json = null, ss_parts, full_dec, full_url, up, dec, hy2_pass;
+    let v_json = null, ss_parts, full_dec, full_url, up, dec, hy2_pass, server_target, transport;
 
     switch (scheme) {
         case 'vless':
             if (params.type === 'kcp') return null;
+            transport = (params.type && params.type !== 'tcp') ? params.type : "";
+            server_target = _resolve_server_target(url, params, scheme, params.type || "");
             config = { 
-                label: default_label, type: 'vless', address: url.hostname, port: url.port, uuid: url.username, 
+                label: default_label, type: 'vless', address: server_target.host, port: server_target.port, uuid: url.username, 
                 tls: (params.security === 'tls' || params.security === 'xtls' || params.security === 'reality') ? '1' : '0', 
                 tls_sni: params.sni || "", tls_utls: params.fp || "",
                 tls_reality: (params.security === 'reality') ? '1' : '0', 
                 tls_reality_public_key: params.pbk || "", tls_reality_short_id: params.sid || "", 
                 vless_flow: (params.security === 'tls' || params.security === 'reality') ? (params.flow || "") : "", 
-                transport: (params.type && params.type !== 'tcp') ? params.type : "", 
+                transport: transport, 
                 tls_alpn: params.alpn || "", tls_insecure: is_insec 
             };
             if (params.type === 'ws') { 
@@ -376,9 +455,11 @@ function _parse_node_uri(uri, global_opts) {
             if (config) { ss_parts = split(parts[1], '#'); config.label = (length(ss_parts) >= 2) ? _urldecode(ss_parts[1]) : ""; }
             break;
         case 'trojan':
+            transport = (params.type && params.type !== 'tcp') ? params.type : "";
+            server_target = _resolve_server_target(url, params, scheme, params.type || "");
             config = { 
-                label: default_label, type: 'trojan', address: url.hostname, port: url.port, password: url.username, 
-                transport: (params.type && params.type !== 'tcp') ? params.type : "", 
+                label: default_label, type: 'trojan', address: server_target.host, port: server_target.port, password: url.username, 
+                transport: transport, 
                 tls: '1', tls_sni: params.sni || "", tls_utls: params.fp || "", tls_insecure: is_insec 
             };
             if (params.type === 'ws') { 
@@ -393,15 +474,18 @@ function _parse_node_uri(uri, global_opts) {
             } else if (params.type === 'grpc') { config.grpc_servicename = params.serviceName || ""; }
             break;
         case 'tuic':
-            config = { label: default_label, type: 'tuic', address: url.hostname, port: url.port, uuid: url.username, password: url.password || "", tls: '1', tls_sni: params.sni || "", tuic_congestion_control: params.congestion_control || "", tuic_udp_relay_mode: params.udp_relay_mode || "", tls_alpn: params.alpn || "", tls_insecure: is_insec };
+            server_target = _resolve_server_target(url, params, scheme, "");
+            config = { label: default_label, type: 'tuic', address: server_target.host, port: server_target.port, uuid: url.username, password: url.password || "", tls: '1', tls_sni: params.sni || "", tuic_congestion_control: params.congestion_control || "", tuic_udp_relay_mode: params.udp_relay_mode || "", tls_alpn: params.alpn || "", tls_insecure: is_insec };
             break;
         case 'anytls':
-            config = { label: default_label, type: 'anytls', address: url.hostname, port: url.port, password: url.username, tls: '1', tls_sni: params.sni || "", tls_insecure: is_insec };
+            server_target = _resolve_server_target(url, params, scheme, "");
+            config = { label: default_label, type: 'anytls', address: server_target.host, port: server_target.port, password: url.username, tls: '1', tls_sni: params.sni || "", tls_insecure: is_insec };
             break;
         case 'hysteria2':
         case 'hy2':
+            server_target = _resolve_server_target(url, params, scheme, "");
             hy2_pass = url.username || ""; if (url.password) hy2_pass += ":" + url.password;
-            config = { label: default_label, type: 'hysteria2', address: url.hostname, port: url.port, password: hy2_pass, hysteria_obfs_type: params.obfs || "", hysteria_obfs_password: params['obfs-password'] || "", tls: '1', tls_insecure: is_insec, tls_sni: params.sni || "" };
+            config = { label: default_label, type: 'hysteria2', address: server_target.host, port: server_target.port, password: hy2_pass, hysteria_obfs_type: params.obfs || "", hysteria_obfs_password: params['obfs-password'] || "", tls: '1', tls_insecure: is_insec, tls_sni: params.sni || "" };
             break;
     }
 
