@@ -1126,15 +1126,8 @@ return view.extend({
         // Notice for sing-box evaluate DNS rules.
         o = s.taboption('dns_rule', form.DummyValue, '_dns_transparent_notice', '');
         o.depends('routing_mode', 'custom');
-        o.renderWidget = function(section_id) {
-            return E('div', {
-                'style': 'padding: 12px 15px; margin-bottom: 15px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 4px; color: #333; line-height: 1.5;'
-            }, [
-                E('strong', {}, [ _('Sing-box 1.14+ evaluate DNS rules') ]),
-                E('br'),
-                _('The evaluate rule action is supported. Use the button below to generate a smart DNS base template, then add custom rules above it.')
-            ]);
-        };
+        o.rawhtml = true;
+        o.default = '<div style="padding: 12px 15px; margin-bottom: 15px; background-color: #e8f4f8; border-left: 4px solid #17a2b8; border-radius: 4px; color: #333; line-height: 1.5;"><b>Sing-box 1.14+ evaluate DNS rules</b><br/>The evaluate rule action is supported. Use the button below to generate a smart DNS base template, then add custom rules above it.</div>';
 
         // Quick template button.
         o = s.taboption('dns_rule', form.DummyValue, '_magic_st_btn', _('Quick guide'));
