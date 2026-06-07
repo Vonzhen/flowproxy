@@ -1164,40 +1164,6 @@ return view.extend({
         o = s.taboption('subscription', form.Flag, 'update_via_proxy', '使用代理更新', '通过当前的代理网络更新订阅。');
         o.rmempty = false;
 
-        o = s.taboption('subscription', form.Flag, 'resolve_server_address', '解析节点服务器地址',
-            '订阅导入后、写入 UCI 前解析节点 address，优先用于 CNAME 规范化。');
-        o.rmempty = false;
-
-        o = s.taboption('subscription', form.ListValue, 'resolve_server_mode', '节点服务器解析模式');
-        o.value('cname', 'CNAME');
-        o.value('prefer_ipv4', 'CNAME，失败后 IPv4');
-        o.value('prefer_ipv6', 'CNAME，失败后 IPv6');
-        o.value('ip_only', '仅 IP');
-        o.default = 'cname';
-        o.depends('resolve_server_address', '1');
-        o.rmempty = false;
-
-        o = s.taboption('subscription', form.ListValue, 'resolve_server_dns', '节点服务器解析 DNS');
-        o.value('', '跟随路由默认 DNS');
-        o.value('alidns', 'AliDNS');
-        o.value('cloudflare', 'Cloudflare');
-        o.value('google', 'Google');
-        o.default = '';
-        o.depends('resolve_server_address', '1');
-
-        o = s.taboption('subscription', form.Value, 'resolve_server_timeout', '节点服务器解析超时');
-        o.datatype = 'uinteger';
-        o.placeholder = '3';
-        o.depends('resolve_server_address', '1');
-
-        o = s.taboption('subscription', form.Flag, 'subscription_debug_log', '订阅解析调试日志',
-            '输出脱敏后的原始订阅行和解析结果，仅用于排查订阅解析问题。');
-        o.rmempty = false;
-
-        o = s.taboption('subscription', form.Value, 'subscription_debug_filter', '订阅解析调试过滤');
-        o.placeholder = '266nets 或 HK02';
-        o.depends('subscription_debug_log', '1');
-
         o = s.taboption('subscription', form.ListValue, 'filter_nodes', '过滤节点 (全局)');
         o.value('disabled', '禁用');
         o.value('blacklist', '黑名单模式');
