@@ -59,6 +59,7 @@ function fill_cron_observation_fields(data, payload, failed, stage) {
     }
     data.restart_only_handled = true;
     if (data.dataplane_touched !== true) data.dataplane_touched = false;
+    if (data.rollback_attempted !== true) data.rollback_attempted = false;
     if (data.rollback_success !== true) data.rollback_success = false;
     data.error_stage = stage || data.error_stage || "";
     data.healthy = failed ? false : (data.healthy === false ? false : true);
@@ -192,6 +193,7 @@ function _cron_subscription_failure(trace_id, stage, detail, uci_bak_path, apply
         cron_auto_apply: true,
         cron_auto_apply_failed: true,
         runtime_applied: false,
+        rollback_attempted: true,
         rollback_success: rollback_success,
         dataplane_touched: false,
         restart_only: true,
@@ -247,6 +249,7 @@ function _cron_restart_only_apply(trace_id, job_type, payload, data, success_msg
         data.restart_only_handled = true;
         data.dataplane_touched = false;
         data.rollback_success = false;
+        data.rollback_attempted = false;
         data.msg = success_msg + " (no runtime restart required)";
         data = fill_cron_observation_fields(data, payload, false, "");
         return Success(data, 200, trace_id);
@@ -264,6 +267,7 @@ function _cron_restart_only_apply(trace_id, job_type, payload, data, success_msg
     data.restart_only_handled = true;
     data.dataplane_touched = !!apply_data.dataplane_touched;
     data.rollback_success = false;
+    data.rollback_attempted = false;
     data.cron_mode_switch = !!(apply_data.cron_mode_switch === true);
     data.msg = data.restart_only ? success_msg : replace(success_msg, "restart-only", "mode-switch lifecycle");
     data = fill_cron_observation_fields(data, payload, false, "");
@@ -286,6 +290,7 @@ function handle_cron_update_assets_transaction(trace_id, payload, deps, dfa_cb, 
             restart_only: true,
             restart_only_handled: true,
             dataplane_touched: false,
+            rollback_attempted: true,
             rollback_success: !!(asset_rb && asset_rb.ok),
             error_stage: "assets_update_failed",
             detail: update_res.detail || "unknown",
@@ -316,6 +321,7 @@ function handle_cron_update_assets_transaction(trace_id, payload, deps, dfa_cb, 
         restart_only: true,
         restart_only_handled: true,
         dataplane_touched: false,
+        rollback_attempted: true,
         rollback_success: !!(asset_rb && asset_rb.ok && runjson_rb_ok && restart_rb_ok),
         error_stage: stage,
         detail: apply_res.detail || "unknown",
@@ -349,6 +355,7 @@ function handle_cron_update_resources_transaction(trace_id, payload, deps, dfa_c
             restart_only: true,
             restart_only_handled: true,
             dataplane_touched: false,
+            rollback_attempted: true,
             rollback_success: !!(resource_rb && resource_rb.ok),
             error_stage: "resources_update_failed",
             detail: update_res.detail || "unknown",
@@ -378,6 +385,7 @@ function handle_cron_update_resources_transaction(trace_id, payload, deps, dfa_c
         restart_only: true,
         restart_only_handled: true,
         dataplane_touched: false,
+        rollback_attempted: true,
         rollback_success: !!(resource_rb && resource_rb.ok && runjson_rb_ok && restart_rb_ok),
         error_stage: stage,
         detail: apply_res.detail || "unknown",

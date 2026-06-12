@@ -21,7 +21,34 @@ import { setup, teardown } from 'flowproxy.system.network';
 import { inject_bypass, execute_fallback } from 'flowproxy.system.safety';
 import { check, verify_after_reload } from 'flowproxy.runtime.launcher';
 import { verify_process } from 'flowproxy.runtime.healthcheck';
-import { task_rollback_assets } from 'flowproxy.modules.assets';
+import {
+    safe_artifact_id as artifacts_safe_artifact_id,
+    shell_path as artifacts_shell_path,
+    artifact_checksum as artifacts_artifact_checksum,
+    artifact_info as artifacts_artifact_info,
+    log_artifact as artifacts_log_artifact,
+    preserve_failed_candidate as artifacts_preserve_failed_candidate,
+    quarantine_candidate as artifacts_quarantine_candidate
+} from 'flowproxy.runtime.runtime_artifacts';
+import {
+    load_json_config as verify_load_json_config,
+    find_inbound as verify_find_inbound,
+    run_json_mode as verify_run_json_mode,
+    core_listener_inbound as verify_core_listener_inbound,
+    core_listener_port as verify_core_listener_port,
+    verify_listen_port as verify_verify_listen_port,
+    verify_tun_up as verify_verify_tun_up,
+    verify_proxy_curl as verify_verify_proxy_curl,
+    verify_restart_only_runtime as verify_verify_restart_only_runtime
+} from 'flowproxy.runtime.runtime_verify';
+import {
+    failure_stage as rollback_failure_stage,
+    normalize_failure_data as rollback_normalize_failure_data,
+    log_rollback_observation as rollback_log_rollback_observation,
+    restore_prev_run_json as rollback_restore_prev_run_json,
+    commit_candidate_run_json as rollback_commit_candidate_run_json,
+    rollback_commit as rollback_runtime_commit
+} from 'flowproxy.runtime.runtime_rollback';
 
 const PATH_NETWORK_MARKER = sprintf("%s/.fp_network_ready", PATH.RUNTIME);
 const PATH_APPLY_MARKER = sprintf("%s/apply.marker", PATH.RUNTIME);
@@ -83,70 +110,19 @@ function is_network_marker_set() {
  */
 
 function _safe_artifact_id(trace_id) {
-    let raw = trace_id || sprintf("%d", time());
-    let out = "";
-    for (let i = 0; i < length(raw); i++) {
-        let c = substr(raw, i, 1);
-        if ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9") || c === "_" || c === "-") {
-            out += c;
-        } else {
-            out += "_";
-        }
-    }
-    return out || sprintf("%d", time());
+    return artifacts_safe_artifact_id(trace_id);
 }
 
 function _shell_path(path) {
-    let out = "'";
-    let s = sprintf("%s", path || "");
-    for (let i = 0; i < length(s); i++) {
-        let c = substr(s, i, 1);
-        if (c === "'") out += "'\\''";
-        else out += c;
-    }
-    return out + "'";
+    return artifacts_shell_path(path);
 }
 
 function _artifact_checksum(path, trace_id) {
-    if (!path || !access(path)) return "missing";
-    let res = ExecSafe(BIN.SH, ["-c", sprintf("sha256sum %s 2>/dev/null | awk '{print $1}'", _shell_path(path))], null, trace_id);
-    if (res.ok && res.data && trim(res.data.stdout || "")) return trim(res.data.stdout || "");
-    res = ExecSafe(BIN.SH, ["-c", sprintf("wc -c %s 2>/dev/null | awk '{print \"bytes:\"$1}'", _shell_path(path))], null, trace_id);
-    if (res.ok && res.data && trim(res.data.stdout || "")) return trim(res.data.stdout || "");
-    return "unknown";
+    return artifacts_artifact_checksum(path, trace_id);
 }
 
 function _artifact_info(path) {
-    let info = { mode: "unknown", inbounds: "" };
-    if (!path || !access(path)) return info;
-    let raw = readfile(path);
-    if (!raw) return info;
-    try {
-        let cfg = json(raw);
-        let inbounds = (cfg && type(cfg.inbounds) === 'array') ? cfg.inbounds : [];
-        let parts = [];
-        let has_tun = false;
-        let has_tproxy = false;
-        let has_redirect = false;
-        for (let i = 0; i < length(inbounds); i++) {
-            let inb = inbounds[i];
-            if (!inb || type(inb) !== 'object') continue;
-            let t = inb.type || "-";
-            let tag = inb.tag || "-";
-            push(parts, sprintf("%s:%s", tag, t));
-            if (t === "tun") has_tun = true;
-            else if (t === "tproxy") has_tproxy = true;
-            else if (t === "redirect") has_redirect = true;
-        }
-        if (has_tun) info.mode = "tun";
-        else if (has_tproxy || has_redirect) info.mode = "redirect_tproxy";
-        else info.mode = "none";
-        info.inbounds = join(",", parts);
-    } catch (e) {
-        info.mode = "parse_error";
-        info.inbounds = "parse_error";
-    }
-    return info;
+    return artifacts_artifact_info(path);
 }
 
 function _bool_field(v, fallback) {
@@ -155,57 +131,11 @@ function _bool_field(v, fallback) {
 }
 
 function _failure_stage(detail, data) {
-    data = (type(data) === 'object') ? data : {};
-    if (data.failed_stage) return data.failed_stage;
-
-    let stage = data.error_stage || "";
-    if (stage === "setup_new_failed") return "setup_new_mode_failed";
-    if (stage === "verify_new_failed") return "verify_new_mode_failed";
-    if (stage === "commit_failed") return "commit_failed";
-    if (stage === "rollback_failed") return "rollback_failed";
-    if (stage === "restart_process_failed") return "restart_process_failed";
-    if (stage === "candidate_check_failed") return "candidate_check_failed";
-
-    let d = sprintf("%s", detail || "");
-    if (index(d, "candidate check failed") >= 0) return "candidate_check_failed";
-    if (index(d, "commit candidate run.json failed") >= 0) return "commit_failed";
-    if (index(d, "Atomic run.json swap failed") >= 0) return "commit_failed";
-    if (index(d, "rollback failed") >= 0) return "rollback_failed";
-    if (index(d, "process restart") >= 0) return "restart_process_failed";
-    if (index(d, "target setup failed") >= 0) return "setup_new_mode_failed";
-    if (index(d, "hard verify failed") >= 0) return "verify_new_mode_failed";
-    return stage || "";
+    return rollback_failure_stage(detail, data);
 }
 
 function _normalize_failure_data(trace_id, detail, data) {
-    data = (type(data) === 'object') ? data : {};
-    let stage = _failure_stage(detail, data);
-    let rollback_attempted = _bool_field(data.rollback_attempted, false);
-
-    if (data.rollback_success === true || data.rollback_failed === true || stage === "rollback_failed") {
-        rollback_attempted = true;
-    }
-    if (index(sprintf("%s", detail || ""), "previous run.json restored") >= 0) {
-        rollback_attempted = true;
-    }
-
-    let rollback_success = _bool_field(data.rollback_success, false);
-    let rollback_failed = _bool_field(data.rollback_failed, rollback_attempted && !rollback_success && stage === "rollback_failed");
-    let danger_state = _bool_field(data.danger_state, rollback_failed);
-    let manual_required = _bool_field(data.manual_intervention_required, danger_state || rollback_failed);
-    let current_mode = data.current_known_mode || data.new_mode || _artifact_info(PATH.RUN_JSON).mode || "unknown";
-    let expected_mode = data.expected_safe_mode || data.old_mode || data.restored_mode || "unknown";
-
-    data.rollback_attempted = rollback_attempted;
-    data.rollback_success = rollback_success;
-    data.rollback_failed = rollback_failed;
-    data.manual_intervention_required = manual_required;
-    data.danger_state = danger_state;
-    data.failed_stage = stage;
-    data.current_known_mode = current_mode;
-    data.expected_safe_mode = expected_mode;
-    data.detail = data.detail || detail || "";
-    return data;
+    return rollback_normalize_failure_data(trace_id, detail, data);
 }
 
 function _obs_bool(v) {
@@ -220,183 +150,30 @@ function _obs_str(v) {
 }
 
 function _log_rollback_observation(trace_id, stage, data) {
-    data = (type(data) === 'object') ? data : {};
-    log(trace_id, 'WARN', 'RUNTIME', sprintf(
-        'rollback_observe stage=%s rollback_attempted=%s rollback_success=%s rollback_failed=%s manual_intervention_required=%s danger_state=%s failed_stage=%s old_mode=%s new_mode=%s current_known_mode=%s expected_safe_mode=%s restored_run_json=%s old_process_restarted=%s old_dataplane_setup=%s old_verify_ok=%s rollback_detail=%s',
-        stage || "unknown",
-        _obs_bool(data.rollback_attempted),
-        _obs_bool(data.rollback_success),
-        _obs_bool(data.rollback_failed),
-        _obs_bool(data.manual_intervention_required),
-        _obs_bool(data.danger_state),
-        _obs_str(data.failed_stage),
-        _obs_str(data.old_mode || data.restored_mode),
-        _obs_str(data.new_mode),
-        _obs_str(data.current_known_mode),
-        _obs_str(data.expected_safe_mode),
-        _obs_bool(data.restored_run_json),
-        _obs_bool(data.old_process_restarted),
-        _obs_bool(data.old_dataplane_setup),
-        _obs_bool(data.old_verify_ok),
-        _obs_str(data.rollback_detail || data.detail)
-    ));
+    return rollback_log_rollback_observation(trace_id, stage, data);
 }
 
 function _log_artifact(trace_id, label, path) {
-    let info = _artifact_info(path);
-    log(trace_id, 'INFO', 'RUNTIME', sprintf(
-        '%s_path=%s %s_mode=%s %s_checksum=%s %s_inbounds=[%s]',
-        label,
-        path || "(none)",
-        label,
-        info.mode,
-        label,
-        _artifact_checksum(path, trace_id),
-        label,
-        info.inbounds
-    ));
+    return artifacts_log_artifact(trace_id, label, path);
 }
 
 function _preserve_failed_candidate(trace_id, reason) {
-    if (!access(PATH_CANDIDATE_CONFIG)) return null;
-    let cp_res = ExecSafe(BIN.CP, ["-f", PATH_CANDIDATE_CONFIG, PATH_FAILED_CONFIG], null, trace_id);
-    if (!cp_res.ok) {
-        log(trace_id, 'WARN', 'RUNTIME', 'failed_candidate copy failed: ' + cp_res.detail);
-        return PATH_CANDIDATE_CONFIG;
-    }
-    log(trace_id, 'WARN', 'RUNTIME', sprintf(
-        'failed_candidate_path=%s reason=%s failed_candidate_checksum=%s',
-        PATH_FAILED_CONFIG,
-        reason || "unknown",
-        _artifact_checksum(PATH_FAILED_CONFIG, trace_id)
-    ));
-    _log_artifact(trace_id, 'failed_candidate', PATH_FAILED_CONFIG);
-    return PATH_FAILED_CONFIG;
+    return artifacts_preserve_failed_candidate(trace_id, reason);
 }
 
 function _quarantine_candidate(trace_id) {
-    if (!access(PATH_CANDIDATE_CONFIG)) return null;
-
-    ExecSafe(BIN.MKDIR, ["-p", PATH_FAILED_CONFIG_DIR], null, trace_id);
-    let failed_path = sprintf("%s/sing-box-run.%s.json", PATH_FAILED_CONFIG_DIR, _safe_artifact_id(trace_id));
-    let cp_res = ExecSafe(BIN.CP, ["-f", PATH_CANDIDATE_CONFIG, failed_path], null, trace_id);
-    _preserve_failed_candidate(trace_id, "candidate_check_failed");
-    if (!cp_res.ok) {
-        log(trace_id, 'WARN', 'RUNTIME', 'Failed to quarantine bad candidate: ' + cp_res.detail);
-        return PATH_CANDIDATE_CONFIG;
-    }
-    return failed_path;
+    return artifacts_quarantine_candidate(trace_id);
 }
 
 /**
  * Restore the previous committed run.json artifact.
  */
 function _restore_prev_run_json(trace_id, bak_path) {
-    let src = bak_path || PATH_PREV_CONFIG;
-    if (!access(src)) {
-        log(trace_id, 'ERROR', 'RUNTIME', sprintf('rollback_result=fail prev_path=%s detail=missing', src));
-        let fail_res = Fail(ERR.E_SYSTEM_BUSY, "previous run.json backup missing: " + src, trace_id);
-        fail_res.data = _normalize_failure_data(trace_id, fail_res.detail, {
-            rollback_attempted: true,
-            rollback_success: false,
-            rollback_failed: true,
-            manual_intervention_required: true,
-            danger_state: true,
-            failed_stage: "restore_prev_run_json_failed",
-            restored_run_json: false,
-            old_dataplane_setup: false,
-            old_setup_failed: false,
-            old_process_restarted: false,
-            old_restart_failed: false,
-            old_verify_ok: false,
-            old_verify_failed: false
-        });
-        _log_rollback_observation(trace_id, "restore_old_run_json_result", fail_res.data);
-        return fail_res;
-    }
-
-    let res = ExecSafe(BIN.CP, ["-f", src, PATH.RUN_JSON], null, trace_id);
-    if (!res.ok) {
-        log(trace_id, 'ERROR', 'RUNTIME', sprintf('rollback_result=fail prev_path=%s detail=%s', src, res.detail || "unknown"));
-        let fail_res = Fail(ERR.E_SYSTEM_BUSY, "restore previous run.json failed: " + res.detail, trace_id);
-        fail_res.data = _normalize_failure_data(trace_id, fail_res.detail, {
-            rollback_attempted: true,
-            rollback_success: false,
-            rollback_failed: true,
-            manual_intervention_required: true,
-            danger_state: true,
-            failed_stage: "restore_prev_run_json_failed",
-            restored_run_json: false,
-            old_dataplane_setup: false,
-            old_setup_failed: false,
-            old_process_restarted: false,
-            old_restart_failed: false,
-            old_verify_ok: false,
-            old_verify_failed: false
-        });
-        _log_rollback_observation(trace_id, "restore_old_run_json_result", fail_res.data);
-        return fail_res;
-    }
-
-    log(trace_id, 'WARN', 'RUNTIME', sprintf(
-        'rollback run.json success rollback_result=success prev_path=%s prev_checksum=%s commit_path=%s commit_checksum=%s',
-        src,
-        _artifact_checksum(src, trace_id),
-        PATH.RUN_JSON,
-        _artifact_checksum(PATH.RUN_JSON, trace_id)
-    ));
-    _log_rollback_observation(trace_id, "restore_old_run_json_result", {
-        rollback_attempted: true,
-        restored_run_json: true,
-        current_known_mode: _artifact_info(PATH.RUN_JSON).mode,
-        rollback_detail: "previous run.json restored"
-    });
-    return Success(true, 200, trace_id);
+    return rollback_restore_prev_run_json(trace_id, bak_path);
 }
 
 function _commit_candidate_run_json(trace_id, bak_path) {
-    if (access(PATH.RUN_JSON)) {
-        let bak_res = ExecSafe(BIN.CP, ["-f", PATH.RUN_JSON, bak_path], null, trace_id);
-        if (!bak_res.ok) {
-            let fail_res = Fail(ERR.E_SYSTEM_BUSY, "backup current run.json failed: " + bak_res.detail, trace_id);
-            fail_res.data = _normalize_failure_data(trace_id, fail_res.detail, {
-                config_committed: false,
-                rollback_attempted: false,
-                rollback_success: false,
-                failed_stage: "commit_failed"
-            });
-            return fail_res;
-        }
-        log(trace_id, 'INFO', 'RUNTIME', sprintf(
-            'prev_path=%s prev_checksum=%s',
-            bak_path,
-            _artifact_checksum(bak_path, trace_id)
-        ));
-    }
-
-    let swap_res = ExecSafe(BIN.CP, ["-f", PATH_CANDIDATE_CONFIG, PATH.RUN_JSON], null, trace_id);
-    if (!swap_res.ok) {
-        let rb = access(bak_path) ? _restore_prev_run_json(trace_id, bak_path) : null;
-        let res = Fail(ERR.E_SYSTEM_BUSY, "commit candidate run.json failed: " + swap_res.detail, trace_id);
-        res.data = _normalize_failure_data(trace_id, res.detail, {
-            config_committed: false,
-            rollback_attempted: !!rb,
-            rollback_success: rb ? !!rb.ok : false,
-            rollback_failed: !!(rb && !rb.ok),
-            manual_intervention_required: !!(rb && !rb.ok),
-            danger_state: !!(rb && !rb.ok)
-        });
-        return res;
-    }
-
-    log(trace_id, 'INFO', 'RUNTIME', sprintf(
-        'commit run.json path=%s commit_path=%s commit_checksum=%s candidate_path=%s restart_result=requested',
-        PATH.RUN_JSON,
-        PATH.RUN_JSON,
-        _artifact_checksum(PATH.RUN_JSON, trace_id),
-        PATH_CANDIDATE_CONFIG
-    ));
-    return Success(true, 200, trace_id);
+    return rollback_commit_candidate_run_json(trace_id, bak_path);
 }
 
 /**
@@ -404,62 +181,23 @@ function _commit_candidate_run_json(trace_id, bak_path) {
  */
 
 function _load_json_config(path) {
-    if (!path || !access(path)) return { ok: false, cfg: null, detail: "run.json missing" };
-    let raw = readfile(path);
-    if (!raw || length(raw) === 0) return { ok: false, cfg: null, detail: "run.json empty" };
-    try {
-        return { ok: true, cfg: json(raw), detail: "" };
-    } catch (e) {
-        return { ok: false, cfg: null, detail: "run.json parse failed: " + ("" + e) };
-    }
+    return verify_load_json_config(path);
 }
 
 function _find_inbound(cfg, inbound_type, tag) {
-    let inbounds = (cfg && type(cfg.inbounds) === 'array') ? cfg.inbounds : [];
-    for (let i = 0; i < length(inbounds); i++) {
-        let inb = inbounds[i];
-        if (!inb || type(inb) !== 'object') continue;
-        if ((inbound_type && inb.type === inbound_type) || (tag && inb.tag === tag)) return inb;
-    }
-    return null;
+    return verify_find_inbound(cfg, inbound_type, tag);
 }
 
 function _run_json_mode(cfg) {
-    let inbounds = (cfg && type(cfg.inbounds) === 'array') ? cfg.inbounds : [];
-    let has_tun = false;
-    let has_redirect = false;
-    let has_tproxy = false;
-    let has_mixed = false;
-    let has_socks = false;
-
-    for (let i = 0; i < length(inbounds); i++) {
-        let inb = inbounds[i];
-        if (!inb || type(inb) !== 'object') continue;
-        if (inb.type === "tun") has_tun = true;
-        else if (inb.type === "redirect") has_redirect = true;
-        else if (inb.type === "tproxy") has_tproxy = true;
-        else if (inb.type === "mixed") has_mixed = true;
-        else if (inb.type === "socks") has_socks = true;
-    }
-
-    if (has_tun) return "tun";
-    if (has_redirect || has_tproxy) return "redirect_tproxy";
-    if (has_mixed || has_socks) return "mixed";
-    return "unknown";
+    return verify_run_json_mode(cfg);
 }
 
 function _core_listener_inbound(cfg) {
-    let mixed = _find_inbound(cfg, "mixed", "mixed-in");
-    if (mixed) return mixed;
-    let socks = _find_inbound(cfg, "socks", "socks-in");
-    if (socks) return socks;
-    return null;
+    return verify_core_listener_inbound(cfg);
 }
 
 function _core_listener_port(cfg) {
-    let listener = _core_listener_inbound(cfg);
-    if (listener && listener.listen_port) return int(listener.listen_port);
-    return 0;
+    return verify_core_listener_port(cfg);
 }
 
 /**
@@ -467,141 +205,19 @@ function _core_listener_port(cfg) {
  */
 
 function _verify_listen_port(port) {
-    if (!port || int(port) <= 0) return false;
-    let safe_port = sprintf("%d", int(port));
-    let grep_expr = sprintf("(^|[.:])%s[[:space:]]", safe_port);
-    let cmd = sprintf(
-        "(%s -lnt 2>/dev/null || ss -lnt 2>/dev/null) | grep -Eq %s",
-        _shell_path(BIN.NETSTAT),
-        _shell_path(grep_expr)
-    );
-    let res = ExecSafe(BIN.SH, ["-c", cmd], null, null);
-    return res.ok;
+    return verify_verify_listen_port(port);
 }
 
 function _verify_tun_up(tun_in) {
-    if (!tun_in) return { ok: false, detail: "tun-in inbound missing" };
-    let iface = tun_in.interface_name || "singtun0";
-    let cmd = sprintf(
-        "ip link show dev %s 2>/dev/null | grep -q 'state UP' || ip link show dev %s 2>/dev/null | grep -q 'UP'",
-        _shell_path(iface),
-        _shell_path(iface)
-    );
-    let res = ExecSafe(BIN.SH, ["-c", cmd], null, null);
-    if (res.ok) return { ok: true, detail: "", iface: iface };
-    return { ok: false, detail: sprintf("%s missing or not UP", iface), iface: iface };
+    return verify_verify_tun_up(tun_in);
 }
 
 function _verify_proxy_curl(trace_id, port) {
-    if (!access(BIN.CURL) || !port || int(port) <= 0) {
-        return { ok: true, warning: "", code: "" };
-    }
-
-    let proxy_url = sprintf("socks5h://127.0.0.1:%d", int(port));
-    let curl_res = ExecSafe(BIN.CURL, [
-        "-sS",
-        "-x", proxy_url,
-        "https://www.google.com/generate_204",
-        "--connect-timeout", "8",
-        "--max-time", "12",
-        "-k",
-        "-o", "/dev/null",
-        "-w", "%{http_code}"
-    ], { timeout: 15 }, trace_id);
-
-    let code = (curl_res.ok && curl_res.data) ? trim(curl_res.data.stdout || "") : "";
-    if (curl_res.ok && code === "204") {
-        return { ok: true, warning: "", code: code };
-    }
-
-    return {
-        ok: false,
-        warning: sprintf("proxy curl failed: http_code=%s detail=%s", code || "-", curl_res.detail || "unknown"),
-        code: code
-    };
+    return verify_verify_proxy_curl(trace_id, port);
 }
 
 function _verify_restart_only_runtime(trace_id) {
-    let cfg_info = _load_json_config(PATH.RUN_JSON);
-    let cfg = cfg_info.cfg;
-    let mode = cfg_info.ok ? _run_json_mode(cfg) : "unknown";
-    let hard_errors = [];
-    let soft_warnings = [];
-
-    let process_ok = verify_process();
-    if (!process_ok) push(hard_errors, "sing-box process not running");
-
-    let run_json_ok = !!cfg_info.ok;
-    if (!run_json_ok) push(hard_errors, cfg_info.detail || "run.json invalid");
-
-    let listener = run_json_ok ? _core_listener_inbound(cfg) : null;
-    let port = run_json_ok ? _core_listener_port(cfg) : 0;
-    let listener_ok = !!listener;
-    if (!listener_ok) push(hard_errors, "core listener inbound missing");
-
-    let port_ok = listener_ok && _verify_listen_port(port);
-    if (!port_ok) push(hard_errors, sprintf("core listener port %d not listening", port || 0));
-
-    let tun_ok = true;
-    if (run_json_ok && mode === "tun") {
-        let tun_in = _find_inbound(cfg, "tun", "tun-in");
-        if (!tun_in) {
-            tun_ok = false;
-            push(hard_errors, "run.json mode=tun but tun-in inbound missing");
-        } else {
-            let tun_chk = _verify_tun_up(tun_in);
-            tun_ok = !!tun_chk.ok;
-            if (!tun_ok) push(hard_errors, tun_chk.detail || "tun interface missing");
-        }
-    } else if (run_json_ok && mode === "redirect_tproxy") {
-        if (!_find_inbound(cfg, "redirect", "redirect-in")) push(hard_errors, "redirect inbound missing");
-        if (!_find_inbound(cfg, "tproxy", "tproxy-in")) push(hard_errors, "tproxy inbound missing");
-    } else if (run_json_ok && mode === "unknown") {
-        push(hard_errors, "run.json mode unknown");
-    }
-
-    let curl_ok = true;
-    if (port_ok) {
-        let curl_res = _verify_proxy_curl(trace_id, port);
-        curl_ok = !!curl_res.ok;
-        if (!curl_ok) push(soft_warnings, curl_res.warning || "proxy curl failed");
-    }
-
-    let hard_ok = length(hard_errors) === 0;
-    let soft_msg = length(soft_warnings) > 0 ? join(" | ", soft_warnings) : "";
-    if (hard_ok && length(soft_warnings) > 0) {
-        log(trace_id, 'WARN', 'RESTART_VERIFY', sprintf(
-            'mode=%s hard_ok=true curl_ok=%s soft_warning=%s',
-            mode,
-            curl_ok ? "true" : "false",
-            soft_msg
-        ));
-    } else {
-        log(trace_id, hard_ok ? 'INFO' : 'WARN', 'RESTART_VERIFY', sprintf(
-            'mode=%s hard_ok=%s curl_ok=%s error=%s',
-            mode,
-            hard_ok ? "true" : "false",
-            curl_ok ? "true" : "false",
-            hard_ok ? "" : join(" | ", hard_errors)
-        ));
-    }
-
-    return {
-        ok: hard_ok,
-        hard_ok: hard_ok,
-        error: hard_ok ? "" : "restart_only_hard_verify_failed",
-        detail: hard_ok ? soft_msg : join(" | ", hard_errors),
-        mode: mode,
-        process_ok: process_ok,
-        run_json_ok: run_json_ok,
-        listener_ok: listener_ok,
-        port_ok: port_ok,
-        port: port,
-        tun_ok: tun_ok,
-        curl_ok: curl_ok,
-        soft_warnings: soft_warnings,
-        stage: "restart_only_verify"
-    };
+    return verify_verify_restart_only_runtime(trace_id);
 }
 
 /**
@@ -640,70 +256,7 @@ function apply_commit(trace_id, opts) {
  * 事务回滚：teardown + fallback + 恢复配置 + 重载请求（不触达 init.d/procd）
  */
 function rollback_commit(trace_id, bak_path, opts) {
-    let reason = _reason(opts, "rollback");
-    let src = bak_path || PATH_PREV_CONFIG;
-    let src_stat = stat(src);
-
-    if (!src || !src_stat || !src_stat.size) {
-        let detail = "rollback previous run.json backup missing or empty: " + (src || "(none)");
-        log(trace_id, 'ERROR', 'RUNTIME', detail);
-        let fail_res = Fail(ERR.E_SYSTEM_BUSY, detail, trace_id);
-        fail_res.data = _normalize_failure_data(trace_id, detail, {
-            rollback_attempted: true,
-            rollback_success: false,
-            rollback_failed: true,
-            manual_intervention_required: true,
-            danger_state: true,
-            failed_stage: "restore_prev_run_json_failed",
-            restored_run_json: false
-        });
-        _log_rollback_observation(trace_id, "restore_old_run_json_result", fail_res.data);
-        return fail_res;
-    }
-
-    let restore_res = ExecSafe(BIN.CP, ["-f", src, PATH.RUN_JSON], null, trace_id);
-    let dst_stat = stat(PATH.RUN_JSON);
-    if (!restore_res.ok || !dst_stat || !dst_stat.size) {
-        let detail = "restore previous run.json failed: " + (restore_res.ok ? "restored file missing or empty" : restore_res.detail);
-        log(trace_id, 'ERROR', 'RUNTIME', detail);
-        let fail_res = Fail(ERR.E_SYSTEM_BUSY, detail, trace_id);
-        fail_res.data = _normalize_failure_data(trace_id, detail, {
-            rollback_attempted: true,
-            rollback_success: false,
-            rollback_failed: true,
-            manual_intervention_required: true,
-            danger_state: true,
-            failed_stage: "restore_prev_run_json_failed",
-            restored_run_json: false
-        });
-        _log_rollback_observation(trace_id, "restore_old_run_json_result", fail_res.data);
-        return fail_res;
-    }
-
-    _log_rollback_observation(trace_id, "restore_old_run_json_result", {
-        rollback_attempted: true,
-        rollback_success: true,
-        rollback_failed: false,
-        manual_intervention_required: false,
-        danger_state: false,
-        restored_run_json: true,
-        current_known_mode: _artifact_info(PATH.RUN_JSON).mode,
-        rollback_detail: "previous run.json restored"
-    });
-
-    /* Physical cleanup is owned by execute_fallback; avoid double teardown/GC. */
-    log(trace_id, 'WARN', 'RUNTIME', '[ROLLBACK] rollback_commit delegated cleanup to fallback reason=' + reason);
-    safe_exec(trace_id, 'runtime', 'system.safety.fallback', () => execute_fallback(trace_id, { reason: "fallback" }));
-
-    _quarantine_candidate(trace_id);
-
-    mark_network_ready(trace_id);
-    let restart_res = _emit_restart_request(trace_id, 'rollback_commit');
-    if (restart_res && restart_res.ok) {
-        restart_res.data = (type(restart_res.data) === 'object') ? restart_res.data : {};
-        restart_res.data.restored_run_json = true;
-    }
-    return restart_res;
+    return rollback_runtime_commit(trace_id, bak_path, opts);
 }
 
 /**
@@ -740,7 +293,11 @@ function teardown_network_only(trace_id, opts) {
  * 7. Transaction Failure Helpers
  */
 
-function _fail_dataplane(trace_id, dfa_cb, bak_path, progress_rb, progress_fail, detail, do_network_rollback) {
+function _is_business_reload_job(job_type) {
+    return job_type === 'update_assets' || job_type === 'update_subscriptions' || job_type === 'rebuild_groups';
+}
+
+function _fail_dataplane(trace_id, dfa_cb, bak_path, progress_rb, progress_fail, detail, do_network_rollback, data) {
     let rb = null;
     if (do_network_rollback && bak_path) {
         rb = rollback_commit(trace_id, bak_path, { reason: "rollback" });
@@ -748,13 +305,17 @@ function _fail_dataplane(trace_id, dfa_cb, bak_path, progress_rb, progress_fail,
     _dfa_emit(dfa_cb, "rollback", progress_rb, detail);
     _dfa_emit(dfa_cb, "fail", progress_fail, detail);
     let fail_res = Fail(ERR.E_SYSTEM_BUSY, detail, trace_id);
-    fail_res.data = _normalize_failure_data(trace_id, detail, {
+    let failure_data = {
         rollback_attempted: !!(do_network_rollback && bak_path),
         rollback_success: !!(rb && rb.ok),
         rollback_failed: !!(do_network_rollback && bak_path && (!rb || !rb.ok)),
         manual_intervention_required: !!(do_network_rollback && bak_path && (!rb || !rb.ok)),
         danger_state: !!(do_network_rollback && bak_path && (!rb || !rb.ok))
-    });
+    };
+    if (type(data) === 'object') {
+        for (let k in data) failure_data[k] = data[k];
+    }
+    fail_res.data = _normalize_failure_data(trace_id, detail, failure_data);
     if (do_network_rollback && is_network_marker_set()) {
         fail_res.need_restart = true;
     }
@@ -1262,7 +823,11 @@ function run_dataplane_reload(trace_id, job_type, dfa_cb, opts) {
 
     let gen_res = ExecSafe(BIN.UCODE, [gateway_script, PATH_CANDIDATE_CONFIG], null, trace_id);
     if (!gen_res.ok) {
-        return _fail_dataplane(trace_id, dfa_cb, null, 50, 55, "配置生成失败: " + gen_res.detail, false);
+        return _fail_dataplane(trace_id, dfa_cb, null, 50, 55, "配置生成失败: " + gen_res.detail, false, {
+            failed_stage: "candidate_generation_failed",
+            failed_artifact: "",
+            detail: "配置生成失败: " + gen_res.detail
+        });
     }
     _log_artifact(trace_id, 'candidate', PATH_CANDIDATE_CONFIG);
 
@@ -1271,12 +836,15 @@ function run_dataplane_reload(trace_id, job_type, dfa_cb, opts) {
         let failed_path = _quarantine_candidate(trace_id);
         log(trace_id, 'WARN', 'RUNTIME', 'check_result=fail candidate check failed; bad candidate quarantined at: ' + (failed_path || "(none)"));
         check_res.detail = check_res.detail + (failed_path ? (" | failed_artifact=" + failed_path) : "");
-
-        if (job_type === 'update_assets' || job_type === 'update_subscriptions' || job_type === 'rebuild_groups') {
-            log(trace_id, 'WARN', 'RUNTIME', 'Asset corruption detected. Initiating emergency asset rollback.');
-            task_rollback_assets(trace_id, {});
+        if (_is_business_reload_job(job_type)) {
+            log(trace_id, 'WARN', 'RUNTIME', 'business rollback recommended; returning failure data to caller.');
         }
-        return _fail_dataplane(trace_id, dfa_cb, null, 55, 60, "安全预检拦截: " + check_res.detail, false);
+        return _fail_dataplane(trace_id, dfa_cb, null, 55, 60, "安全预检拦截: " + check_res.detail, false, {
+            failed_stage: "candidate_check_failed",
+            failed_artifact: failed_path || "",
+            business_rollback_recommended: _is_business_reload_job(job_type),
+            detail: "安全预检拦截: " + check_res.detail
+        });
     }
     log(trace_id, 'INFO', 'RUNTIME', sprintf(
         'check_result=success candidate_path=%s candidate_checksum=%s',

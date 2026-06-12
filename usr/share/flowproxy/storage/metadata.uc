@@ -61,7 +61,7 @@ const Metadata = {
             let ns = payload.namespace;
             let k = payload.key;
             
-            if (!_cache[ns] || _cache[ns][k] === undefined) {
+            if (!_cache[ns] || _cache[ns][k] == null) {
                 return Success({ value: null }, 200, trace_id); // ⭐ 协议对齐
             }
 
@@ -74,7 +74,7 @@ const Metadata = {
 
     set: function(payload, trace_id) {
         try {
-            if (!payload || !payload.namespace || !payload.key || payload.value === undefined) {
+            if (!payload || !payload.namespace || !payload.key || payload.value == null) {
                 return Fail(ERR.E_SYSTEM_BUSY, "Validation Failed: namespace, key and value are required", trace_id);
             }
 

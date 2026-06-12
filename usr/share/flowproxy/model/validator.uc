@@ -17,15 +17,35 @@ function is_valid_port(port) {
     return port > 0 && port <= 65535;
 }
 
+function strToInt(val) { return (val != null && val !== "") ? int(val) : null; }
+
 function is_valid_uuid(uuid) {
     if (type(uuid) !== 'string') return false;
     return match(uuid, REGEX.UUID) !== null;
+}
+
+function is_valid_node_uuid(uuid) {
+    if (is_valid_uuid(uuid)) return true;
+    return type(uuid) === 'string' && length(uuid) === 32 && index(uuid, '-') < 0;
 }
 
 function is_valid_host(host) {
     if (type(host) !== 'string' || length(host) === 0) return false;
     if (match(host, /[ \t\/\\#\?]/)) return false;
     return true;
+}
+
+function endpoint_tag(ep) {
+    return ep.tag || sprintf("cfg-%s-out", ep['.name']);
+}
+
+function endpoint_host(ep) {
+    return ep.server || ep.address;
+}
+
+function endpoint_port(ep) {
+    if (ep.server_port != null) return ep.server_port;
+    return strToInt(ep.port);
 }
 
 function scan_inbounds(inbounds, errors) {
@@ -55,22 +75,23 @@ function scan_inbounds(inbounds, errors) {
 function scan_endpoints(endpoints, errors, valid_tags) {
     for (let i = 0; i < length(endpoints); i++) {
         let ep = endpoints[i];
-        valid_tags[ep.tag] = true; 
+        let tag = endpoint_tag(ep);
+        valid_tags[tag] = true;
 
         if (ep.type !== 'wireguard') {
-            if (!is_valid_host(ep.server)) push(errors, sprintf("Endpoint [%s] missing or invalid server address.", ep.tag));
-            if (!is_valid_port(ep.server_port)) push(errors, sprintf("Endpoint [%s] invalid port.", ep.tag));
+            if (!is_valid_host(endpoint_host(ep))) push(errors, sprintf("Endpoint [%s] missing or invalid server address.", tag));
+            if (!is_valid_port(endpoint_port(ep))) push(errors, sprintf("Endpoint [%s] invalid port.", tag));
         }
 
         switch (ep.type) {
             case 'vless':
             case 'vmess':
             case 'tuic':
-                if (!is_valid_uuid(ep.uuid)) push(errors, sprintf("Endpoint [%s] missing or malformed UUID.", ep.tag));
+                if (!is_valid_node_uuid(ep.uuid)) push(errors, sprintf("Endpoint [%s] missing or malformed UUID.", tag));
                 break;
             case 'trojan':
             case 'shadowsocks':
-                if (type(ep.password) !== 'string' || length(ep.password) === 0) push(errors, sprintf("Endpoint [%s] missing password.", ep.tag));
+                if (type(ep.password) !== 'string' || length(ep.password) === 0) push(errors, sprintf("Endpoint [%s] missing password.", tag));
                 break;
         }
     }

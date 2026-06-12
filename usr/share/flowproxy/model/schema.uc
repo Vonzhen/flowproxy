@@ -17,23 +17,6 @@ import { Success, Fail } from 'flowproxy.core.result';
 
 function strToInt(val) { return (val != null && val !== "") ? int(val) : null; }
 function strToBool(val) { return (val != null && val !== "") ? (val === '1' || val === 'true') : null; }
-function strToTime(val) { 
-    if (val !=null && val !=="") {
-       return match(val,/^[0-9]+$/) ? val + "s" : val;
-    }
-    return null;
-}
-function parse_port(val) { return strToInt(val); }
-
-// 架构修复：全局 UUID 补全器，专治机场残缺 32 位 UUID，满足网关严格质检
-function normalize_uuid(u) {
-    if (!u || type(u) !== 'string') return u;
-    if (length(u) === 32 && index(u, '-') < 0) {
-        return sprintf("%s-%s-%s-%s-%s", substr(u,0,8), substr(u,8,4), substr(u,12,4), substr(u,16,4), substr(u,20,12));
-    }
-    return u;
-}
-
 const U_CONFIG = 'flowproxy';
 const S_INFRA = 'infra';
 const S_MAIN = 'config';
@@ -67,6 +50,14 @@ function get_proxy_mode(u) {
 
 function get_tun_dns_mode(u) {
     return strOrDefault(u.get(U_CONFIG, S_INFRA, 'tun_dns_mode'), "hijack");
+}
+
+function build_listen_policy(u) {
+    let allow_lan = u.get(U_CONFIG, S_MAIN, 'allow_lan') === '1';
+    return {
+        allow_lan: allow_lan,
+        safe_listen_addr: allow_lan ? '::' : '127.0.0.1'
+    };
 }
 
 function is_tun_dns_hijack(u, proxy_mode) {
@@ -151,97 +142,6 @@ function build_inbounds(u, snap) {
     return inbounds;
 }
 
-function generate_endpoint(node, self_mark, use_routing_mark) {
-    if (type(node) !== 'object') return null;
-
-    let ep = { type: node.type, tag: sprintf("cfg-%s-out", node['.name']), server: node.address, server_port: strToInt(node.port) };
-    if (use_routing_mark) ep.routing_mark = self_mark;
-
-    switch (node.type) {
-        case 'wireguard':
-            delete ep.server; delete ep.server_port;
-            ep.local_address = node.wireguard_local_address; ep.mtu = strToInt(node.wireguard_mtu);
-            ep.private_key = node.wireguard_private_key;
-            ep.peers = [{ server: node.address, server_port: strToInt(node.port), public_key: node.wireguard_peer_public_key, pre_shared_key: node.wireguard_pre_shared_key, allowed_ips: ['0.0.0.0/0', '::/0'], persistent_keepalive_interval: strToInt(node.wireguard_persistent_keepalive_interval), reserved: parse_port(node.wireguard_reserved) }];
-            break;
-        case 'ssh':
-            ep.user = node.username; ep.password = node.password; ep.client_version = node.ssh_client_version;
-            ep.host_key = node.ssh_host_key; ep.host_key_algorithms = node.ssh_host_key_algo;
-            ep.private_key = node.ssh_priv_key; ep.private_key_passphrase = node.ssh_priv_key_pp;
-            break;
-        case 'shadowsocks':
-            ep.method = node.shadowsocks_encrypt_method; ep.password = node.password;
-            ep.plugin = node.shadowsocks_plugin; ep.plugin_opts = node.shadowsocks_plugin_opts;
-            break;
-        case 'shadowtls':
-            ep.password = node.password; ep.version = strToInt(node.shadowtls_version);
-            break;
-        case 'hysteria':
-        case 'hysteria2':
-            ep.password = node.password;
-            ep.up_mbps = strToInt(node.hysteria_up_mbps); ep.down_mbps = strToInt(node.hysteria_down_mbps);
-            ep.obfs = node.hysteria_obfs_type ? { type: node.hysteria_obfs_type, password: node.hysteria_obfs_password } : node.hysteria_obfs_password;
-            ep.auth = (node.hysteria_auth_type === 'base64') ? node.hysteria_auth_payload : null;
-            ep.auth_str = (node.hysteria_auth_type === 'string') ? node.hysteria_auth_payload : null;
-            ep.recv_window_conn = strToInt(node.hysteria_recv_window_conn); 
-            ep.recv_window = strToInt(node.hysteria_recv_window || node.hysteria_revc_window);
-            ep.disable_mtu_discovery = strToBool(node.hysteria_disable_mtu_discovery);
-            break;
-        case 'tuic':
-            ep.uuid = normalize_uuid(node.uuid); ep.password = node.password; ep.congestion_control = node.tuic_congestion_control;
-            ep.udp_relay_mode = node.tuic_udp_relay_mode; ep.udp_over_stream = strToBool(node.tuic_udp_over_stream);
-            ep.zero_rtt_handshake = strToBool(node.tuic_enable_zero_rtt); ep.heartbeat = strToTime(node.tuic_heartbeat);
-            break;
-        case 'vmess':
-            ep.uuid = normalize_uuid(node.uuid); ep.alter_id = strToInt(node.vmess_alterid); ep.security = node.vmess_encrypt;
-            ep.global_padding = strToBool(node.vmess_global_padding); ep.authenticated_length = strToBool(node.vmess_authenticated_length);
-            ep.packet_encoding = node.packet_encoding;
-            break;
-        case 'vless':
-            ep.uuid = normalize_uuid(node.uuid); ep.flow = node.vless_flow; ep.packet_encoding = node.packet_encoding;
-            break;
-        case 'trojan':
-            ep.password = node.password;
-            break;
-        case 'socks':
-        case 'anytls': ep.password = node.password; break;
-        case 'http':
-            ep.version = node.type === 'socks' ? node.socks_version : null;
-            ep.username = node.username; ep.password = node.password;
-            break;
-    }
-
-    if (node.transport && node.transport !== 'tcp') {
-        let tp = { 
-            type: node.transport, 
-            host: node.http_host || node.httpupgrade_host, 
-            path: node.http_path || node.ws_path, 
-            method: node.http_method, 
-            service_name: node.grpc_servicename, 
-            idle_timeout: strToTime(node.http_idle_timeout), 
-            ping_timeout: strToTime(node.http_ping_timeout), 
-            permit_without_stream: strToBool(node.grpc_permit_without_stream) 
-        };
-
-        // 核心战果：强制 Host 为数组 [ ]，消灭高版本内核崩溃
-        if (node.ws_host) { tp.headers = { "Host": node.ws_host }; }
-        if (node.websocket_early_data) {
-            tp.max_early_data = strToInt(node.websocket_early_data) || 2048;
-            tp.early_data_header_name = node.websocket_early_data_header || "Sec-WebSocket-Protocol";
-        }
-        ep.transport = tp;
-    }
-
-    if (node.multiplex === '1') {
-        ep.multiplex = { enabled: true, protocol: node.multiplex_protocol, max_connections: strToInt(node.multiplex_max_connections), min_streams: strToInt(node.multiplex_min_streams), max_streams: strToInt(node.multiplex_max_streams), padding: strToBool(node.multiplex_padding) };
-    }
-
-    if (node.tls === '1') {
-        ep.tls = { enabled: true, server_name: node.tls_sni, insecure: strToBool(node.tls_insecure), alpn: (type(node.tls_alpn) === 'array') ? node.tls_alpn : (node.tls_alpn ? split(node.tls_alpn, ',') : null), min_version: node.tls_min_version, max_version: node.tls_max_version, cipher_suites: (type(node.tls_cipher_suites) === 'array') ? node.tls_cipher_suites : (node.tls_cipher_suites ? split(node.tls_cipher_suites, ',') : null), certificate_path: node.tls_cert_path, utls: node.tls_utls ? { enabled: true, fingerprint: node.tls_utls } : ((node.type === 'tuic' || node.type === 'hysteria2' || node.type === 'hysteria') ? null : { enabled: true, fingerprint: 'chrome' }), reality: (node.tls_reality === '1') ? { enabled: true, public_key: node.tls_reality_public_key, short_id: node.tls_reality_short_id } : null, ech: (node.tls_ech === '1') ? { enabled: true, config: node.tls_ech_config, config_path: node.tls_ech_config_path } : null };
-    }
-    return ep;
-}
-
 function build_outbounds(u, proxy_mode) {
     let endpoints = [];
     let outbounds = [];
@@ -257,8 +157,10 @@ function build_outbounds(u, proxy_mode) {
     push(outbounds, { type: 'block', tag: 'block-out' });
 
     u.foreach(U_CONFIG, 'node', (cfg) => {
-        let ep = generate_endpoint(cfg, self_mark, use_routing_mark);
-        if (ep) { push(endpoints, ep); endpoint_dict[ep.tag] = true; }
+        if (type(cfg) !== 'object') return;
+        let endpoint_tag = sprintf("cfg-%s-out", cfg['.name']);
+        push(endpoints, cfg);
+        endpoint_dict[endpoint_tag] = true;
     });
 
     u.foreach(U_CONFIG, 'routing_node', (cfg) => {
@@ -285,7 +187,14 @@ function build_outbounds(u, proxy_mode) {
         if (length(out_group.outbounds) > 0) push(outbounds, out_group);
     });
 
-    return { endpoints, outbounds };
+    return {
+        endpoint_policy: {
+            self_mark: self_mark,
+            use_routing_mark: use_routing_mark
+        },
+        endpoints: endpoints,
+        outbounds: outbounds
+    };
 }
 
 function build_policies(u, valid_outbounds) {
@@ -416,7 +325,7 @@ function build_flow_model(trace_id) {
         
         let valid_outbounds = {};
         for (let i = 0; i < length(obs.outbounds); i++) valid_outbounds[obs.outbounds[i].tag] = true;
-        for (let i = 0; i < length(obs.endpoints); i++) valid_outbounds[obs.endpoints[i].tag] = true;
+        for (let i = 0; i < length(obs.endpoints); i++) valid_outbounds[sprintf("cfg-%s-out", obs.endpoints[i]['.name'])] = true;
 
         let pd = build_policies(u, valid_outbounds);
         let exp_model = build_experimental(u);
@@ -424,9 +333,11 @@ function build_flow_model(trace_id) {
         let flow_model = {
             schema_version: "1.2",
             enabled: snap.service_enabled,
+            listen_policy: build_listen_policy(u),
             log: { level: u.get(U_CONFIG, S_MAIN, 'log_level') || 'warn', output_path: PATH.LOG_RUN },
             experimental: exp_model,
             inbounds: inbounds,
+            endpoint_policy: obs.endpoint_policy,
             endpoints: obs.endpoints,
             outbounds: obs.outbounds,
             route: pd.route,

@@ -304,15 +304,7 @@ start_service() {
     fi
 
     if [ -s "$CONF_FILE" ]; then
-        reset_procd_instance_state
-        procd_open_instance "main"
-        procd_set_param command "$PROG" run -c "$CONF_FILE"
-        procd_set_param respawn 3600 5 20
-        procd_set_param stdout 1
-        procd_set_param stderr 1
-        uname -r | grep -Eq "^6\\.6" && procd_set_param env "QUIC_GO_DISABLE_GSO=true"
-
-        procd_close_instance
+        register_process_instance
 
         rm -f "$NETWORK_MARKER" "$RUN_DIR/apply.marker"
         echo "$epoch" > "$LIFECYCLE_ACTIVE"
@@ -477,5 +469,5 @@ reload_service() {
 }
 
 service_triggers() {
-    return 0
+    procd_add_reload_trigger "flowproxy"
 }

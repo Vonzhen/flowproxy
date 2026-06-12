@@ -97,6 +97,10 @@ function _diag_exec_sh(command, trace_id) {
     };
 }
 
+function _gateway_curl(args, trace_id) {
+    return ExecSafe(BIN.CURL, args, null, trace_id);
+}
+
 function _conn_site_to_path(site) {
     if (site === 'baidu' || site === 'direct') return 'direct';
     if (site === 'google' || site === 'proxy') return 'proxy';
@@ -124,7 +128,7 @@ const NetworkQuery = {
             push(curl_args, "-x", "socks5h://127.0.0.1:" + px.port);
         }
 
-        let res = ExecSafe(BIN.CURL, curl_args, null, trace_id);
+        let res = _gateway_curl(curl_args, trace_id);
         let code_str = (res.ok && res.data) ? trim(res.data.stdout || "") : "";
         let ok = (index(["200", "204"], code_str) !== -1);
         let payload = {
@@ -256,7 +260,7 @@ const SystemQuery = {
         };
 
         let url_stable = "https://api.github.com/repos/SagerNet/sing-box/releases/latest";
-        let res_stable = ExecSafe(BIN.CURL, build_curl_args(url_stable), null, trace_id);
+        let res_stable = _gateway_curl(build_curl_args(url_stable), trace_id);
         
         if (res_stable.ok && res_stable.data && res_stable.data.stdout) {
             try {
@@ -270,7 +274,7 @@ const SystemQuery = {
         }
 
         let url_beta = "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=5";
-        let res_beta = ExecSafe(BIN.CURL, build_curl_args(url_beta), null, trace_id);
+        let res_beta = _gateway_curl(build_curl_args(url_beta), trace_id);
         
         if (res_beta.ok && res_beta.data && res_beta.data.stdout) {
             try {
