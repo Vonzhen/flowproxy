@@ -20,6 +20,7 @@ import { ensure_dir } from 'flowproxy.core.utils';
 import { build_flow_model } from 'flowproxy.model.schema';
 import { validate_model } from 'flowproxy.model.validator';
 import { Adapter } from 'flowproxy.adapter.singbox';
+import { detect as detect_singbox_caps } from 'flowproxy.adapter.singbox.capabilities';
 
 let trace_id = 'SYNC_BOOT_' + gen_trace_id();
 let candidate_path = sprintf("%s/sing-box-run.candidate.json", PATH.RUNTIME);
@@ -61,7 +62,8 @@ try {
     }
 
     // [Step 4] 翻译生成 JSON
-    let adapter_res = Adapter.translate(flow_model, null, trace_id);
+    let caps = detect_singbox_caps(trace_id);
+    let adapter_res = Adapter.translate(flow_model, caps, trace_id);
     if (!adapter_res.ok || !adapter_res.data) {
         log(trace_id, 'CRIT', 'GATEWAY', 'Adapter Translation Failed: ' + adapter_res.detail);
         exit(1);

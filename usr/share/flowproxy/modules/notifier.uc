@@ -283,11 +283,11 @@ function _format_watchdog_summary(status, data) {
 }
 
 function _format_maintenance_summary(status, data) {
-    let msg = status === "fail" ? "❌ 日志归档失败" : "✅ 日志归档完成";
-    msg += "\n" + _divider();
-    msg += "\n📝 维护内容: 运行日志已轮转归档";
-    msg += "\n🛡️ 运行说明: 不影响当前代理服务";
-    return msg;
+    let cleanup_msg = status === "fail" ? "❌ 日志清理失败" : "✅ 日志清理完成";
+    cleanup_msg += "\n" + _divider();
+    cleanup_msg += "\n📝 维护内容: 运行日志截断与过期文件清理";
+    cleanup_msg += "\n🛡️ 运行说明: 不影响当前代理服务";
+    return cleanup_msg;
 }
 
 function notification_summary(task_type, status, data, fallback_msg) {

@@ -19,13 +19,13 @@ import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
 import { JOB_TYPES } from 'flowproxy.core.contract';
 
-import { ExecSafe, shell_escape } from 'flowproxy.core.utils';
+import { ExecSafe } from 'flowproxy.core.utils';
 import { log } from 'flowproxy.core.logger';
+import { launch_worker } from 'flowproxy.runtime.worker_launcher';
 
 // ⭐ 补丁对齐：引入系统的 Trace 引擎代替私有 uuid 生成
 import { init as gen_trace_id } from 'flowproxy.core.trace';
 
-const SCRIPT_WORKER = "/usr/share/flowproxy/runtime/worker.uc";
 const JOB_ID_PATTERN = regexp('^job_[a-zA-Z0-9_-]+$');
 const JSON_SUFFIX_PATTERN = regexp('\\.json$');
 
@@ -259,14 +259,19 @@ const JobManager = {
         log(t_id, "INFO", "JOB", sprintf("Dispatched, type: %s, job_id: %s", job_type, job_id));
 
         // 🚨 铁律 7: 彻底防御 Shell 注入
-        let safe_worker = shell_escape(SCRIPT_WORKER);
-        let safe_job_id = shell_escape(job_id);
-        let safe_log    = shell_escape(sprintf("%s/%s.log", PATH.JOB, job_id));
+        let launch_res = launch_worker(job_id, t_id);
         
-        let cmd_str = sprintf("UCODE_PATH=/usr/share/ucode ucode %s %s >> %s 2>&1 &", safe_worker, safe_job_id, safe_log);
+        if (!launch_res || !launch_res.ok) {
+            initial_state.state = STATE_ENUM.FAIL;
+            initial_state.progress = 0;
+            initial_state.update_time = time();
+            initial_state.error = (launch_res && launch_res.detail) ? launch_res.detail : "Worker launch failed";
+            _write_state(job_id, initial_state);
+            log(t_id, "ERROR", "JOB", sprintf("Worker launch failed, job_id: %s detail: %s", job_id, initial_state.error));
+            return Fail(ERR.E_SYSTEM_BUSY, initial_state.error, t_id);
+        }
         
         // 唤起后台 Worker
-        ExecSafe(BIN.SH, ["-c", cmd_str], null, t_id);
 
         // 返回标准 Success 格式
         return Success({ job_id: job_id }, 200, t_id);

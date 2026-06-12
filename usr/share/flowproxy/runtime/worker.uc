@@ -7,17 +7,26 @@
 
 import { cursor } from 'uci';
 
-import { JOB_TYPES, job_allows_dataplane_reload } from 'flowproxy.core.contract';
+import { JOB_TYPES } from 'flowproxy.core.contract';
 import { ERR } from 'flowproxy.core.error';
 import { Success, Fail } from 'flowproxy.core.result';
 import { with_changed } from 'flowproxy.core.module_result';
 import { log as sys_log } from 'flowproxy.core.logger';
 
-import { get_status, transition, set_result_summary, STATE_ENUM } from 'flowproxy.core.job';
+import { get_status, transition, STATE_ENUM } from 'flowproxy.core.job';
 import { acquire } from 'flowproxy.core.lock';
 import { run_all_checks } from 'flowproxy.core.selfcheck';
 import { StateManager } from 'flowproxy.runtime.state';
 import { RuntimeOrchestrator } from 'flowproxy.runtime.runtime';
+import {
+    persist_result_summary as result_summary_persist
+} from 'flowproxy.runtime.result_summary';
+import {
+    is_manual_business_task as reload_policy_is_manual_business_task,
+    is_cron_auto_apply as reload_policy_is_cron_auto_apply,
+    mark_manual_apply_required as reload_policy_mark_manual_apply_required,
+    needs_reload as reload_policy_needs_reload
+} from 'flowproxy.runtime.reload_policy';
 import {
     safe_system_reload as apply_safe_system_reload,
     safe_process_reload as apply_safe_process_reload,
@@ -41,7 +50,7 @@ import {
 } from 'flowproxy.runtime.lifecycle';
 
 import { task_update_subscriptions } from 'flowproxy.modules.subscription';
-import { _rebuild_groups_unlocked } from 'flowproxy.modules.groups';
+import { task_rebuild_groups } from 'flowproxy.modules.groups';
 import { task_update_assets_summary, task_rollback_assets } from 'flowproxy.modules.assets';
 import { task_update_kernel } from 'flowproxy.modules.kernel';
 import { send_telegram_best_effort as notifier_send_telegram_best_effort, notification_summary } from 'flowproxy.modules.notifier';
@@ -52,7 +61,7 @@ import {
     restore_resources as resources_restore_resources
 } from 'flowproxy.modules.resources';
 import { observe } from 'flowproxy.runtime.watchdog';
-import { logrotate } from 'flowproxy.core.logger';
+import { maintenance_cleanup } from 'flowproxy.storage.cleaner';
 
 function Log(module, level, msg, job_id) {
     sys_log(job_id, level, module, msg);
@@ -63,43 +72,15 @@ function _dfa(job_id, state, progress, err) {
 }
 
 function _is_manual_business_task(job_type, payload) {
-    if (!(job_type === 'update_subscriptions' || job_type === 'update_assets' || job_type === 'update_resources' || job_type === 'rebuild_groups')) {
-        return false;
-    }
-    payload = payload || {};
-    let source = sprintf("%s", payload.source || "");
-    let auto_apply = payload.auto_apply;
-    let auto_apply_disabled = (auto_apply === false || auto_apply === 0 || auto_apply === "0" || auto_apply === "false" || auto_apply === "no");
-    return source === "manual" || auto_apply_disabled;
+    return reload_policy_is_manual_business_task(job_type, payload);
 }
 
 function _is_cron_auto_apply(job_type, payload) {
-    if (!(job_type === 'update_subscriptions' || job_type === 'update_assets' || job_type === 'update_resources' || job_type === 'rebuild_groups')) {
-        return false;
-    }
-    payload = payload || {};
-    let source = sprintf("%s", payload.source || "");
-    let auto_apply = payload.auto_apply;
-    let auto_apply_enabled = (auto_apply === true || auto_apply === 1 || auto_apply === "1" || auto_apply === "true" || auto_apply === "yes");
-    return source === "cron" && auto_apply_enabled;
+    return reload_policy_is_cron_auto_apply(job_type, payload);
 }
 
 function _mark_manual_apply_required(result) {
-    result.data = (type(result.data) === 'object') ? result.data : {};
-    result.data.business_success = true;
-    result.data.manual_apply_required = true;
-    result.data.runtime_applied = false;
-    result.data.next_action = "manual_apply_required";
-    result.data.config_committed = false;
-    result.data.dataplane_touched = false;
-    result.data.restart_only = false;
-    result.data.rollback_success = false;
-    if (result.data.msg) {
-        result.data.msg += "%0ABusiness data updated; runtime apply is pending.%0Anext_action=manual_apply_required";
-    } else {
-        result.data.msg = "Business data updated; runtime apply is pending.%0Anext_action=manual_apply_required";
-    }
-    return result;
+    return reload_policy_mark_manual_apply_required(result);
 }
 
 function _bool_text(v) {
@@ -144,145 +125,12 @@ function _send_telegram_best_effort(task_type, status, msg, job_id) {
     return notifier_send_telegram_best_effort(task_type, status, msg, job_id, 'WORKER');
 }
 
-const RESULT_SUMMARY_LIST_LIMIT = 20;
-
-function _as_array(v) {
-    return (type(v) === 'array') ? v : [];
-}
-
-function _copy_summary_flag(summary, data, key) {
-    if (type(data) === 'object' && data[key] != null) {
-        summary[key] = data[key];
-    }
-}
-
-function _limit_string_list(items) {
-    items = _as_array(items);
-    let out = [];
-    for (let i = 0; i < length(items) && i < RESULT_SUMMARY_LIST_LIMIT; i++) {
-        push(out, sprintf("%s", items[i]));
-    }
-    return out;
-}
-
-function _limit_airport_stats(items) {
-    items = _as_array(items);
-    let out = [];
-    for (let i = 0; i < length(items) && i < RESULT_SUMMARY_LIST_LIMIT; i++) {
-        let item = items[i] || {};
-        push(out, {
-            name: sprintf("%s", item.name || "unknown"),
-            nodes: int(item.nodes || 0)
-        });
-    }
-    return out;
-}
-
-function _array_len(items) {
-    return length(_as_array(items));
-}
-
-function _build_result_summary(job_type, state, data, detail) {
-    data = (type(data) === 'object') ? data : {};
-    let summary = {
-        kind: job_type || "unknown",
-        message: "",
-        counts: {},
-        items: {}
-    };
-
-    _copy_summary_flag(summary, data, "manual_apply_required");
-    _copy_summary_flag(summary, data, "runtime_applied");
-    _copy_summary_flag(summary, data, "dataplane_success");
-    _copy_summary_flag(summary, data, "next_action");
-    _copy_summary_flag(summary, data, "error_stage");
-    _copy_summary_flag(summary, data, "failed_stage");
-    _copy_summary_flag(summary, data, "config_committed");
-    _copy_summary_flag(summary, data, "rollback_success");
-    _copy_summary_flag(summary, data, "old_mode");
-    _copy_summary_flag(summary, data, "new_mode");
-
-    if (detail) summary.error_message = detail;
-    else if (data.detail) summary.error_message = data.detail;
-
-    if (job_type === "update_subscriptions") {
-        let failed_airports = _as_array(data.failed_airports);
-        let failed_count = data.failed_count != null ? int(data.failed_count) : length(failed_airports);
-        summary.message = (state === "fail")
-            ? "订阅更新失败"
-            : (failed_count > 0 ? "订阅部分更新成功" : "订阅全局更新成功");
-        summary.duration_sec = int(data.duration_sec || data.duration || 0);
-        summary.counts.success = int(data.success_count || 0);
-        summary.counts.failed = failed_count;
-        summary.counts.total_nodes = int(data.total_nodes || 0);
-        summary.counts.total = summary.counts.success + summary.counts.failed;
-        summary.items.airport_stats = _limit_airport_stats(data.airport_stats);
-        summary.items.failed = _limit_string_list(failed_airports);
-        return summary;
-    }
-
-    if (job_type === "rebuild_groups") {
-        summary.message = (state === "fail") ? "节点组重建失败" : "节点组重建完成";
-        if (data.changed != null) summary.changed = !!data.changed;
-        return summary;
-    }
-
-    if (job_type === "update_assets" || job_type === "update_resources") {
-        let updated = _as_array(data.updated);
-        let unchanged = _as_array(data.unchanged);
-        let failed = _as_array(data.failed);
-        let failed_count = length(failed);
-        let label = job_type === "update_assets" ? "规则集" : "资源";
-        summary.message = (state === "fail")
-            ? label + "更新失败"
-            : (failed_count > 0 ? label + "部分更新成功" : label + "更新完成");
-        summary.counts.updated = length(updated);
-        summary.counts.unchanged = length(unchanged);
-        summary.counts.failed = failed_count;
-        summary.counts.total = length(updated) + length(unchanged) + failed_count;
-        summary.items.updated = _limit_string_list(updated);
-        summary.items.unchanged = _limit_string_list(unchanged);
-        summary.items.failed = _limit_string_list(failed);
-        if (data.version) summary.version = data.version;
-        if (data.changed != null) summary.changed = !!data.changed;
-        return summary;
-    }
-
-    if (job_type === "apply_config" || job_type === "mode_switch_apply") {
-        summary.message = (state === "fail") ? "配置应用失败" : "配置已应用";
-        return summary;
-    }
-
-    summary.message = (state === "fail") ? "任务失败" : "任务完成";
-    return summary;
-}
-
 function _persist_result_summary(job_id, job_type, state, data, detail) {
-    let summary = _build_result_summary(job_type, state, data, detail);
-    let res = set_result_summary(job_id, summary, job_id);
-    if (!res || !res.ok) {
-        Log('WORKER', 'WARN', 'result_summary persist failed: ' + ((res && res.detail) ? res.detail : "unknown"), job_id);
-    }
-    return res;
+    return result_summary_persist(job_id, job_type, state, data, detail, 'WORKER');
 }
 
 function _needs_reload(job_type, result, payload) {
-    if (!job_allows_dataplane_reload(job_type)) return false;
-    if (!result || !result.ok) return false;
-    let data = result.data;
-
-    if (type(data) === 'object' && data.next_action === "manual_apply_required") return false;
-    if (type(data) === 'object' && data.restart_only_handled) return false;
-
-    if (job_type === 'update_subscriptions' || job_type === 'update_assets' || job_type === 'update_resources' || job_type === 'rebuild_groups') {
-        if (!_is_cron_auto_apply(job_type, payload)) return false;
-    }
-
-    if (job_type === 'apply_config' || job_type === 'update_subscriptions' || job_type === 'rebuild_groups') {
-        return true;
-    }
-    if (type(data) === 'object' && data.changed) return true;
-    return false;
+    return reload_policy_needs_reload(job_type, result, payload);
 }
 
 function _begin_lifecycle_epoch(job_id, reason) {
@@ -417,12 +265,7 @@ function _handle_apply_config(job_id, payload) {
 }
 
 function _handle_rebuild_groups(job_id, payload) {
-    let lock_res = acquire(job_id, "worker");
-    if (!lock_res.ok) return lock_res;
-    let lock_handle = lock_res.data;
-
-    let res = _rebuild_groups_unlocked(job_id);
-    lock_handle.release();
+    let res = task_rebuild_groups(job_id);
     if (!res.ok) return Fail(ERR.E_SYSTEM_BUSY, "重组节点组失败: " + res.detail, job_id);
     return res;
 }
@@ -470,12 +313,6 @@ function _handle_repair_current_mode(job_id, payload) {
     } catch (e) {
         return _release_and_return(lock_handle, Fail(ERR.E_SYSTEM_BUSY, "repair_current_mode crashed: " + ("" + e), job_id));
     }
-}
-
-function _handle_deploy_panels(job_id, payload) {
-    let res = task_update_assets_summary(job_id, { action: 'update', target: 'panels' });
-    if (!res.ok) return Fail(ERR.E_SYSTEM_BUSY, res.detail, job_id);
-    return res;
 }
 
 function _handle_update_kernel(job_id, payload) {
@@ -601,12 +438,19 @@ function _handle_watchdog_report(job_id, payload) {
     }, 200, job_id);
 }
 function _handle_maintenance_logrotate(job_id, payload) {
-    let cleanup = logrotate();
-    Log('WORKER', 'INFO', 'Log archive maintenance completed.', job_id);
+    let cleanup = maintenance_cleanup(job_id);
+    if (cleanup && cleanup.ok === false) {
+        return Fail(ERR.E_SYSTEM_BUSY, sprintf(
+            "日志清理失败: stage=%s detail=%s",
+            cleanup.error_stage || "unknown",
+            cleanup.error || "unknown"
+        ), job_id);
+    }
+    Log('WORKER', 'INFO', 'Log cleanup maintenance completed.', job_id);
     return Success({
         maintenance_success: true,
         cleanup: cleanup || {},
-        msg: "日志归档完成"
+        msg: "日志清理完成"
     }, 200, job_id);
 }
 
@@ -620,7 +464,6 @@ const HANDLERS = {
     "system_rollback": _handle_system_rollback,
     "repair_current_mode": _handle_repair_current_mode,
     "update_kernel": _handle_update_kernel,
-    "deploy_panels": _handle_deploy_panels,
     "watchdog_report": _handle_watchdog_report,
     "maintenance_logrotate": _handle_maintenance_logrotate
 };

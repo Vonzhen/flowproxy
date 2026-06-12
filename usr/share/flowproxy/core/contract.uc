@@ -23,7 +23,6 @@ const JOB_TYPES = {
     "update_assets": true,         // update rule assets
     "system_rollback": true,       // emergency rollback
     "update_kernel": true,         // read-only kernel version check
-    "deploy_panels": true,         // deploy frontend panel assets
     "update_resources": true,      // update IP/domain resources
     "watchdog_report": true,       // passive runtime observation
     "maintenance_logrotate": true  // log archive maintenance
