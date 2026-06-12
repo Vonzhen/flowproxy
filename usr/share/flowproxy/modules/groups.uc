@@ -105,7 +105,7 @@ function _rebuild_groups_unlocked(trace_id) {
                 uci.set(UCICONFIG, group_id, 'auto_generated', '1');
                 uci.set(UCICONFIG, group_id, 'urltest_nodes', n_list);
                 uci.set(UCICONFIG, group_id, 'urltest_url', 'https://www.gstatic.com/generate_204');
-                uci.set(UCICONFIG, group_id, 'urltest_interval', '600');
+                uci.set(UCICONFIG, group_id, 'urltest_interval', '180');
                 uci.set(UCICONFIG, group_id, 'urltest_tolerance', '150');
                 uci.set(UCICONFIG, group_id, 'urltest_interrupt_exist_connections', '1');
 
@@ -134,7 +134,7 @@ function _rebuild_groups_unlocked(trace_id) {
             uci.set(UCICONFIG, top_id, 'auto_generated', '1');
             uci.set(UCICONFIG, top_id, 'urltest_nodes', top_level_nodes[reg]);
             uci.set(UCICONFIG, top_id, 'urltest_url', 'https://www.gstatic.com/generate_204');
-            uci.set(UCICONFIG, top_id, 'urltest_interval', '600');
+            uci.set(UCICONFIG, top_id, 'urltest_interval', '180');
             uci.set(UCICONFIG, top_id, 'urltest_tolerance', '150');
             uci.set(UCICONFIG, top_id, 'urltest_interrupt_exist_connections', '1');
         }
