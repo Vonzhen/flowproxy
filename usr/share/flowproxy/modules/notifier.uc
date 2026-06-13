@@ -174,6 +174,11 @@ function _restart_status(data) {
     return "未执行";
 }
 
+function _failure_stage_label(data) {
+    data = (type(data) === 'object') ? data : {};
+    return data.failed_stage || data.error_stage || "";
+}
+
 function _status_line(ok_text, warn_text, fail_text, status, has_fail) {
     if (status === "fail") return "❌ " + fail_text;
     if (has_fail) return "⚠️ " + warn_text;
@@ -199,7 +204,8 @@ function _append_failed_list(msg, label, items, suffix, max_items) {
 function _format_subscription_summary(status, data) {
     let failed_airports = (type(data.failed_airports) === 'array') ? data.failed_airports : [];
     let airport_stats = (type(data.airport_stats) === 'array') ? data.airport_stats : [];
-    let has_warn = length(failed_airports) > 0 || data.dataplane_success === false || data.error_stage;
+    let failed_stage = _failure_stage_label(data);
+    let has_warn = length(failed_airports) > 0 || data.dataplane_success === false || failed_stage;
     let msg = _status_line("订阅全局更新成功", "订阅部分更新成功", "订阅更新失败", status, has_warn);
     msg += "\n" + _divider();
     msg += sprintf("\n⏳ 总耗时: %d 秒 | 总节点: %d", data.duration_sec || data.duration || 0, data.total_nodes || 0);
@@ -217,7 +223,7 @@ function _format_subscription_summary(status, data) {
     }
 
     msg = _append_failed_list(msg + (length(failed_airports) > 0 ? "\n" : ""), "❌ 失败订阅", failed_airports, "", 20);
-    if (data.error_stage) msg += "\n\n📍 失败阶段: " + data.error_stage;
+    if (failed_stage) msg += "\n\n📍 失败阶段: " + failed_stage;
     if (data.detail) msg += "\n🧾 错误详情: " + data.detail;
     msg += sprintf("\n\n♻️ 服务自动重启: %s", _restart_status(data));
     if (data.runtime_applied === true) {
@@ -247,7 +253,8 @@ function _format_list_update_summary(title_ok, title_warn, title_fail, status, d
     msg = _append_bullet_list(msg + (length(updated) > 0 ? "\n" : ""), "📝 更新清单", updated, " (更新)", 20);
     msg = _append_failed_list(msg + (length(failed) > 0 ? "\n" : ""), "❌ 失败清单", failed, " (失败)", 20);
 
-    if (data.error_stage) msg += "\n\n📍 失败阶段: " + data.error_stage;
+    let failed_stage = _failure_stage_label(data);
+    if (failed_stage) msg += "\n\n📍 失败阶段: " + failed_stage;
     if (status === "fail" && data.detail) msg += "\n🧾 错误详情: " + data.detail;
     msg += sprintf("\n\n♻️ 服务自动重启: %s", _restart_status(data));
     return msg;
@@ -257,7 +264,8 @@ function _format_apply_summary(status, data, fallback_msg) {
     let msg = status === "fail" ? "❌ 配置应用失败" : "✅ 配置应用成功";
     msg += "\n" + _divider();
     if (status === "fail") {
-        if (data.error_stage || data.failed_stage) msg += "\n📍 失败阶段: " + (data.error_stage || data.failed_stage);
+        let failed_stage = _failure_stage_label(data);
+        if (failed_stage) msg += "\n📍 失败阶段: " + failed_stage;
         msg += "\n🧾 错误详情: " + (fallback_msg || data.detail || "未知错误");
         msg += sprintf("\n\n🛟 回滚状态: %s", data.rollback_success ? "成功" : "未完成");
         return msg;

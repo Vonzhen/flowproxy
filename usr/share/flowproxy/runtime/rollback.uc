@@ -11,6 +11,7 @@ import { Success, Fail } from 'flowproxy.core.result';
 import { log } from 'flowproxy.core.logger';
 import { ExecSafe } from 'flowproxy.core.utils';
 import { RuntimeOrchestrator } from 'flowproxy.runtime.runtime';
+import { normalize_failure_data } from 'flowproxy.runtime.runtime_rollback';
 import {
     begin_lifecycle_epoch,
     clear_lifecycle_protect,
@@ -26,7 +27,7 @@ function Log(module, level, msg, trace_id) {
 
 function _rollback_failure(trace_id, detail) {
     let res = Fail(ERR.E_SYSTEM_BUSY, detail, trace_id);
-    res.data = {
+    res.data = normalize_failure_data(trace_id, detail, {
         rollback_attempted: true,
         rollback_success: false,
         rollback_failed: true,
@@ -36,7 +37,7 @@ function _rollback_failure(trace_id, detail) {
         current_known_mode: "unknown",
         expected_safe_mode: "unknown",
         detail: detail || ""
-    };
+    });
     return res;
 }
 
