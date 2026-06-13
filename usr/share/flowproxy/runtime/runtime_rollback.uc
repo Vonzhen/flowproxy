@@ -63,6 +63,12 @@ function _bool_field(v, fallback) {
     return !!fallback;
 }
 
+function _tri_bool_field(v, fallback) {
+    if (v === true || v === false) return v;
+    if (fallback === true || fallback === false) return fallback;
+    return null;
+}
+
 function failure_stage(detail, data) {
     data = (type(data) === 'object') ? data : {};
     if (data.failed_stage) return data.failed_stage;
@@ -74,16 +80,41 @@ function failure_stage(detail, data) {
     if (stage === "rollback_failed") return "rollback_failed";
     if (stage === "restart_process_failed") return "restart_process_failed";
     if (stage === "candidate_check_failed") return "candidate_check_failed";
+    if (stage === "candidate_generation_failed") return "candidate_generation_failed";
+    if (stage === "teardown_old_failed") return "teardown_old_failed";
+    if (stage === "restore_prev_run_json_failed") return "restore_prev_run_json_failed";
+    if (stage === "old_setup_failed") return "old_setup_failed";
+    if (stage === "old_restart_failed") return "old_restart_failed";
+    if (stage === "old_verify_failed") return "old_verify_failed";
 
     let d = sprintf("%s", detail || "");
+    if (index(d, "candidate generation failed") >= 0) return "candidate_generation_failed";
     if (index(d, "candidate check failed") >= 0) return "candidate_check_failed";
+    if (index(d, "mode switch candidate check failed") >= 0) return "candidate_check_failed";
+    if (index(d, "backup current run.json failed") >= 0) return "commit_failed";
     if (index(d, "commit candidate run.json failed") >= 0) return "commit_failed";
     if (index(d, "Atomic run.json swap failed") >= 0) return "commit_failed";
+    if (index(d, "restore previous run.json failed") >= 0) return "restore_prev_run_json_failed";
+    if (index(d, "previous run.json backup missing") >= 0) return "restore_prev_run_json_failed";
     if (index(d, "rollback failed") >= 0) return "rollback_failed";
     if (index(d, "process restart") >= 0) return "restart_process_failed";
+    if (index(d, "restart-only hard verify failed") >= 0) return "verify_new_mode_failed";
+    if (index(d, "mode switch hard verify failed") >= 0) return "verify_new_mode_failed";
     if (index(d, "target setup failed") >= 0) return "setup_new_mode_failed";
     if (index(d, "hard verify failed") >= 0) return "verify_new_mode_failed";
     return stage || "";
+}
+
+function _derive_verify_passed(detail, data, stage) {
+    if (data.verify_passed === true || data.verify_passed === false) return data.verify_passed;
+    if (data.verified === true || data.verified === false) return data.verified;
+    if (data.verify_hard_ok === true || data.verify_hard_ok === false) return data.verify_hard_ok;
+
+    let s = sprintf("%s", stage || "");
+    let d = sprintf("%s", detail || "");
+    if (index(s, "verify") >= 0) return false;
+    if (index(d, "verify failed") >= 0 || index(d, "验收失败") >= 0) return false;
+    return null;
 }
 
 function normalize_failure_data(trace_id, detail, data) {
@@ -99,9 +130,12 @@ function normalize_failure_data(trace_id, detail, data) {
     }
 
     let rollback_success = _bool_field(data.rollback_success, false);
-    let rollback_failed = _bool_field(data.rollback_failed, rollback_attempted && !rollback_success && stage === "rollback_failed");
-    let danger_state = _bool_field(data.danger_state, rollback_failed);
-    let manual_required = _bool_field(data.manual_intervention_required, danger_state || rollback_failed);
+    let rollback_failed = rollback_attempted && !rollback_success;
+    if (data.rollback_failed === true) rollback_failed = true;
+    if (rollback_success === true) rollback_failed = false;
+    let danger_state = (data.danger_state === true) || rollback_failed;
+    let manual_required = (data.manual_intervention_required === true) || danger_state || rollback_failed;
+    let verify_passed = _derive_verify_passed(detail, data, stage);
     let current_mode = data.current_known_mode || data.new_mode || artifact_info(PATH.RUN_JSON).mode || "unknown";
     let expected_mode = data.expected_safe_mode || data.old_mode || data.restored_mode || "unknown";
 
@@ -111,6 +145,8 @@ function normalize_failure_data(trace_id, detail, data) {
     data.manual_intervention_required = manual_required;
     data.danger_state = danger_state;
     data.failed_stage = stage;
+    data.error_stage = data.error_stage || stage || "";
+    data.verify_passed = _tri_bool_field(data.verify_passed, verify_passed);
     data.current_known_mode = current_mode;
     data.expected_safe_mode = expected_mode;
     data.detail = data.detail || detail || "";
@@ -128,9 +164,9 @@ function _obs_str(v) {
     return sprintf("%s", v);
 }
 
-function log_rollback_observation(trace_id, stage, data) {
+function log_rollback_observation(trace_id, stage, data, log_module) {
     data = (type(data) === 'object') ? data : {};
-    log(trace_id, 'WARN', 'RUNTIME', sprintf(
+    log(trace_id, 'WARN', log_module || 'RUNTIME', sprintf(
         'rollback_observe stage=%s rollback_attempted=%s rollback_success=%s rollback_failed=%s manual_intervention_required=%s danger_state=%s failed_stage=%s old_mode=%s new_mode=%s current_known_mode=%s expected_safe_mode=%s restored_run_json=%s old_process_restarted=%s old_dataplane_setup=%s old_verify_ok=%s rollback_detail=%s',
         stage || "unknown",
         _obs_bool(data.rollback_attempted),
@@ -320,6 +356,12 @@ function rollback_commit(trace_id, bak_path, opts) {
     if (restart_res && restart_res.ok) {
         restart_res.data = (type(restart_res.data) === 'object') ? restart_res.data : {};
         restart_res.data.restored_run_json = true;
+        restart_res.data.rollback_attempted = true;
+        restart_res.data.rollback_success = true;
+        restart_res.data.rollback_failed = false;
+        restart_res.data.danger_state = false;
+        restart_res.data.manual_intervention_required = false;
+        restart_res.data.verify_passed = null;
     }
     return restart_res;
 }

@@ -310,7 +310,8 @@ function _fail_dataplane(trace_id, dfa_cb, bak_path, progress_rb, progress_fail,
         rollback_success: !!(rb && rb.ok),
         rollback_failed: !!(do_network_rollback && bak_path && (!rb || !rb.ok)),
         manual_intervention_required: !!(do_network_rollback && bak_path && (!rb || !rb.ok)),
-        danger_state: !!(do_network_rollback && bak_path && (!rb || !rb.ok))
+        danger_state: !!(do_network_rollback && bak_path && (!rb || !rb.ok)),
+        runtime_applied: false
     };
     if (type(data) === 'object') {
         for (let k in data) failure_data[k] = data[k];
@@ -359,7 +360,7 @@ function _run_verify_phase(trace_id, job_type, dfa_cb, bak_path) {
 
     clear_network_marker(trace_id);
     log(trace_id, 'INFO', 'RUNTIME', 'Dataplane transaction complete.');
-    return Success({ verified: true }, 200, trace_id);
+    return Success({ verified: true, verify_passed: true }, 200, trace_id);
 }
 
 function _run_process_verify_phase(trace_id, job_type, dfa_cb, bak_path) {
@@ -378,6 +379,10 @@ function _run_process_verify_phase(trace_id, job_type, dfa_cb, bak_path) {
             config_committed: true,
             runtime_applied: true,
             rollback_success: false,
+            rollback_failed: false,
+            danger_state: false,
+            manual_intervention_required: false,
+            verify_passed: true,
             verify_hard_ok: true,
             curl_ok: core.curl_ok,
             soft_warnings: core.soft_warnings || [],
@@ -394,6 +399,7 @@ function _run_process_verify_phase(trace_id, job_type, dfa_cb, bak_path) {
             config_committed: true,
             runtime_applied: false,
             rollback_success: false,
+            verify_passed: false,
             verify_hard_ok: false,
             curl_ok: core.curl_ok,
             soft_warnings: core.soft_warnings || [],
@@ -406,6 +412,7 @@ function _run_process_verify_phase(trace_id, job_type, dfa_cb, bak_path) {
         config_committed: true,
         runtime_applied: false,
         rollback_success: true,
+        verify_passed: false,
         verify_hard_ok: false,
         curl_ok: core.curl_ok,
         soft_warnings: core.soft_warnings || [],
@@ -596,6 +603,7 @@ function _run_mode_switch_verify_phase(trace_id, dfa_cb, opts) {
             config_committed: true,
             runtime_applied: false,
             dataplane_touched: true,
+            verify_passed: false,
             rollback_attempted: true,
             rollback_success: !!(rb && rb.ok),
             rollback_failed: !!(rb && !rb.ok),
@@ -630,6 +638,7 @@ function _run_mode_switch_verify_phase(trace_id, dfa_cb, opts) {
             config_committed: true,
             runtime_applied: false,
             dataplane_touched: true,
+            verify_passed: false,
             rollback_attempted: true,
             rollback_success: !!(rb && rb.ok),
             rollback_failed: !!(rb && !rb.ok),
@@ -669,6 +678,10 @@ function _run_mode_switch_verify_phase(trace_id, dfa_cb, opts) {
         runtime_applied: true,
         dataplane_touched: true,
         rollback_success: false,
+        rollback_failed: false,
+        danger_state: false,
+        manual_intervention_required: false,
+        verify_passed: true,
         verify_hard_ok: true,
         curl_ok: core.curl_ok,
         soft_warnings: core.soft_warnings || [],
@@ -746,6 +759,7 @@ function run_process_reload(trace_id, job_type, dfa_cb, opts) {
             runtime_applied: false,
             config_committed: false,
             dataplane_touched: false,
+            verify_passed: null,
             need_restart: false
         };
         return res;
@@ -800,6 +814,7 @@ function run_process_reload(trace_id, job_type, dfa_cb, opts) {
         bak_path: bak_path,
         config_committed: true,
         runtime_applied: false,
+        verify_passed: null,
         rollback_success: false
     }, 200, trace_id);
 }
@@ -930,6 +945,7 @@ function run_mode_switch_apply(trace_id, job_type, dfa_cb, opts) {
                 config_committed: false,
                 runtime_applied: false,
                 dataplane_touched: false,
+                verify_passed: null,
                 rollback_success: false
             });
         }
@@ -951,6 +967,7 @@ function run_mode_switch_apply(trace_id, job_type, dfa_cb, opts) {
                 config_committed: false,
                 runtime_applied: false,
                 dataplane_touched: false,
+                verify_passed: null,
                 rollback_success: false,
                 failed_artifact: failed_path || ""
             });
@@ -988,6 +1005,7 @@ function run_mode_switch_apply(trace_id, job_type, dfa_cb, opts) {
             config_committed: false,
             runtime_applied: false,
             dataplane_touched: false,
+            verify_passed: null,
             rollback_success: false
         });
     }
@@ -1017,6 +1035,7 @@ function run_mode_switch_apply(trace_id, job_type, dfa_cb, opts) {
             config_committed: false,
             runtime_applied: false,
             dataplane_touched: true,
+            verify_passed: null,
             rollback_attempted: true,
             rollback_success: !!(setup_old && setup_old.ok),
             rollback_failed: !(setup_old && setup_old.ok),
@@ -1048,6 +1067,7 @@ function run_mode_switch_apply(trace_id, job_type, dfa_cb, opts) {
             config_committed: false,
             runtime_applied: false,
             dataplane_touched: true,
+            verify_passed: null,
             rollback_attempted: true,
             rollback_success: !!(setup_old && setup_old.ok),
             rollback_failed: !(setup_old && setup_old.ok),
@@ -1083,6 +1103,7 @@ function run_mode_switch_apply(trace_id, job_type, dfa_cb, opts) {
         prev_run_json_checksum: _artifact_checksum(bak_path, trace_id),
         config_committed: true,
         runtime_applied: false,
+        verify_passed: null,
         dataplane_touched: true
     }, 200, trace_id);
 }

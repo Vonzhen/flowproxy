@@ -59,6 +59,10 @@ function build_result_summary(job_type, state, data, detail) {
     _copy_summary_flag(summary, data, "failed_stage");
     _copy_summary_flag(summary, data, "config_committed");
     _copy_summary_flag(summary, data, "rollback_success");
+    _copy_summary_flag(summary, data, "rollback_failed");
+    _copy_summary_flag(summary, data, "danger_state");
+    _copy_summary_flag(summary, data, "manual_intervention_required");
+    if (type(data) === 'object') summary.verify_passed = data.verify_passed;
     _copy_summary_flag(summary, data, "old_mode");
     _copy_summary_flag(summary, data, "new_mode");
 
