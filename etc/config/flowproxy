@@ -79,7 +79,7 @@ config flowproxy 'server'
 
 config assets 'assets'
 	option base_url 'https://testingcf.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing'
-	option private_repo 'https://raw.githubusercontent.com/Vonzhen/sing-box-rulesets/refs/heads/master/rules'
+	option private_repo 'https://raw.githubusercontent.com/miozen/sing-box-rulesets/refs/heads/master/rules'
 	option auto_update '1'
 	option update_time '7'
 
